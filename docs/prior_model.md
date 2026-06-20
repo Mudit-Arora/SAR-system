@@ -107,4 +107,4 @@ impassable cells, and the multiplicative (non-compensatory) structure.
 - Bayesian search theory / update formula — Stone, *Theory of Optimal Search*; Koopman (1946).
 - Tobler's hiking function — for the cost-distance friction surface.
 
-> Provenance for the gathered behavior numbers lives in `data/README.md` → `behavior/`.
+> Provenance for the gathered behavior numbers lives in `data/behavior/koester_references.md`.

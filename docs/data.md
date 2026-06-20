@@ -59,7 +59,7 @@ Used to evaluate, and optionally fine-tune (stretch), the person detector.
 - `detection/coral_eval_out/` — **outputs** of the eval (annotated stills: ground-level `bus`
   control + aerial crop detections; the 4K `aerial_detect.mp4` run offline on the board). See its
   own `README.md` for captions. Produced 2026-06-19 by running the shipped vendor detector
-  (familiarization). Evidence base for `docs/board_feasibility.md`.
+  (familiarization). Evidence base for the Coral board-feasibility assessment.
 
 > Several of these have research-use / non-commercial terms. Confirm each license before
 > redistributing weights trained on them or shipping samples in the demo.

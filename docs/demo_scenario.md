@@ -12,7 +12,7 @@ demo beats in `SAR_project_plan.md` §9.
 >
 > **All coordinates and numbers below are illustrative**, chosen to be plausible for the chosen
 > region and to tell a clean search story. Geography is finalized when the AOI is drawn
-> (`data/README.md`); behavior numbers are replaced by the Koester data (Tier-1 gather).
+> (`docs/data.md`); behavior numbers are replaced by the Koester data (Tier-1 gather).
 
 ---
 

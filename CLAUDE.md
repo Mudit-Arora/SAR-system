@@ -1,18 +1,18 @@
 # Project Agent Instructions — Wide-Area Search & Rescue Support System
 
 Instructions for any agentic coding tool (and teammate) working in this repo. Start with
-`docs/strategy_ogsm.md` — the project's north-star, which reconciles every other doc and
-carries a document map (§4.3) routing you to the right one. Then read the docs relevant to
-your task, in particular `docs/SAR_project_plan.md` (the full design) and `docs/interfaces.md`
-(the contracts), before doing anything.
+`kickoff.md` — the start-here for this directory: your part, the read-order, the build order,
+and the priorities. Then read the docs relevant to your task, in particular `docs/interfaces.md`
+(the contracts + the Bayesian/`located` math) and `docs/prior_model.md` (the prior), before
+doing anything. (The full design is in `docs/SAR_project_plan.md` if you need it.)
 
 ---
 
 ## ✅ Build mode ON — activated 2026-06-20; the pre-event no-build rule no longer applies.
 
 The event has started. Writing project/pipeline code, building models, and assembling
-pipeline components is now permitted and expected. Follow `prep/runbook.md` (the opening
-sequence) and the per-component prompts in `prep/`. Build stubs-first against the ratified
+pipeline components is now permitted and expected. Follow `kickoff.md` (the opening sequence
+for this directory) and the component prompts in `prep/`. Build stubs-first against the ratified
 contracts in `docs/interfaces.md`; protect the core loop above all else (see below).
 
 ---
@@ -51,7 +51,7 @@ broadcast + operator alert.
   fully in software. Any board (Raspberry Pi / Coral) is one person's optional demo layer,
   fed by the same detection service, off the critical path. At most **one** physical angle
   (Coral *or* QNX, not both). The Coral was **assessed Friday 2026-06-19 → reframed to an
-  isolated feasibility-showcase** (not our aerial detector), per `docs/board_feasibility.md`.
+  isolated feasibility-showcase** (not our aerial detector).
 - **Voice priority: subject broadcast first (protected), operator interface second.** The
   broadcast is cheap and the demo's high point. The operator interface is the richer build
   and the first thing to cut under time pressure.
@@ -109,7 +109,7 @@ sar-system/
 └── demo/        demo scripts + scenario config
 ```
 
-`data/` subfolders are gathering buckets (see `data/README.md` for provenance), adjustable,
+`data/` subfolders are gathering buckets (see `docs/data.md` for provenance), adjustable,
 not a structural commitment.
 
 ---

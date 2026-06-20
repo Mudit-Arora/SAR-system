@@ -159,5 +159,5 @@ For the thermal story, run a downloaded thermal-fine-tuned checkpoint on WiSARD 
 | Detector | YOLO11s/m + SAHI, `classes=[0]`, behind `Detector` Protocol | RT-DETR (recall) / YOLO26 (newer); thermal `.pt` for WiSARD | Fastest working loop; SAHI is the no-train small-object lever |
 | LLM | Claude Haiku 4.5 (`claude-haiku-4-5`) | Sonnet 4.6 if nuance needed | Lightest model adequate for short generation/extraction |
 
-> Detector weights and their provenance/licensing live in `data/README.md` → `weights/`.
+> Detector weights and their provenance/licensing live in `docs/data.md` → `weights/`.
 > The AGPL caveat (Ultralytics) is the one licensing item to resolve before any public hosting.
