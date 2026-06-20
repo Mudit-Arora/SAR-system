@@ -1,0 +1,43 @@
+# =============================================================================
+# .gitignore
+# -----------------------------------------------------------------------------
+# Keep the repo light: gathered datasets, model weights, secrets, and the usual
+# Python/editor cruft stay out of version control. Folder structure under data/
+# is preserved via .gitkeep files; the large payloads inside are ignored.
+# =============================================================================
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Gathered data (large; tracked by structure only, not contents) ---
+data/terrain/*
+data/detection/*
+data/footage/*
+data/behavior/*
+data/weights/*
+# ...but keep the empty-folder markers and any small docs we choose to commit
+!data/**/.gitkeep
+!data/README.md
+!data/**/*.md
+
+# --- Model weights anywhere else ---
+*.pt
+*.pth
+*.onnx
+*.tflite
+*.engine
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# --- OS / editor ---
+.DS_Store
+.vscode/
+.idea/
