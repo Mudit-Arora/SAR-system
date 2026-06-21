@@ -240,3 +240,24 @@ step). Honest limitations (it's a feasibility showcase):
 - **Home = LKP** (reused as the operators position); a separate configurable operator point is a
   one-field future seam.
 - **Movement is modeled only in the guide-home phase** — the search still assumes a stationary subject.
+
+### Hybrid dashboard map (built; supersedes the backdrop + client heatmap)
+
+The dashboard map was three stacked, under-informative layers (blurry upscaled terrain, a 6-blob
+heatmap *approximation*, single-drone). It's now a **hybrid**: the server renders the **unified base**
+per frame — gray hillshade + graded-alpha posterior + sectors, reusing the demo's `draw_belief_layer`
++ `_draw_sectors` (`integration/map_render.py`, served at `GET /map_base.png?v=frame`) — and the
+browser overlays **live vector drones + trails + the guide overlay** (`ProbabilityMap.tsx`). The
+server runs the **3-drone** `run_combined` scenario, pre-computed and streamed by frame index; panels
+come from per-frame `MapState` (`PlannerFrame.map_state`). Result: the map looks/reads like the
+`search_and_guide` 3-drone demo, live. Notes:
+- **Alignment** is the crux and is pinned: one **cell-center** normalization `(c+0.5)/n` on both
+  sides + a shared `frame` index, proven by a pixel test (`tests/test_map_render.py`) and a live
+  screenshot (each drone vector sits inside its colored sector outline).
+- **Map interactivity** is reduced: the sidebar layer toggles no longer reshape the (server-rendered)
+  base. Acceptable for a local-only showcase; toggles could be re-wired through render params later.
+- **Performance:** base frames lazily rendered (~50 ms) + cached by index in the stepper thread;
+  matplotlib serialized behind a render lock. The server now **requires the real rasters** (the
+  scenario is real-terrain), so its tests skip without `data/terrain/`.
+- **Superseded for the map:** the colorized `terrain_render` `/terrain.png` and the client 6-blob
+  `useHeatmap` (both left in place but unused by the map).
