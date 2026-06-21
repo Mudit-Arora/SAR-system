@@ -100,6 +100,65 @@ def test_server_runs_through_guidance_to_arrived(monkeypatch):
         assert guide_step["status"] == "done"
 
 
+def test_subject_broadcast_appears_once_located(monkeypatch):
+    """
+    Scenario: run flat-out to the locate; inspect /state at the start vs. after locating.
+    Why it matters: the spoken broadcast is the demo's high point — it must be ABSENT during the
+    search and then carry the composed message (English + Spanish) once located. (Reads /state
+    only — no Deepgram call.)
+    """
+    import integration.server as server
+
+    monkeypatch.setattr(server, "_STEP_INTERVAL_S", 0.0)
+    from fastapi.testclient import TestClient
+
+    with TestClient(server.app) as client:
+        client.post("/reset")
+        assert client.get("/state").json()["subjectBroadcast"] is None  # frame 0: searching
+
+        deadline = time.time() + 25.0
+        h = client.get("/health").json()
+        while not h["located"] and time.time() < deadline:
+            time.sleep(0.05)
+            h = client.get("/health").json()
+        assert h["located"]
+
+        bc = client.get("/state").json()["subjectBroadcast"]
+        assert bc is not None
+        assert "en" in bc["texts"] and "es" in bc["texts"]
+        assert "stay" in bc["texts"]["en"].lower()
+        assert "en" in bc["langs"]
+
+
+def test_broadcast_mp3_serves_audio_when_synthesized(monkeypatch):
+    """
+    Scenario: force Deepgram synthesis to return fake bytes (NO live call); request the audio.
+    Why it matters: pins the /broadcast.mp3 plumbing — once located it serves audio/mpeg for a
+    supported language (en) and 404s for an unsupported one (es -> browser-TTS fallback).
+    """
+    import integration.server as server
+
+    monkeypatch.setattr(server, "_STEP_INTERVAL_S", 0.0)
+    monkeypatch.setattr(server, "synthesize", lambda text, voice="x": b"FAKE_MP3")  # never hits Deepgram
+    from fastapi.testclient import TestClient
+
+    with TestClient(server.app) as client:
+        client.post("/reset")  # clears the audio cache so our mock is used
+        deadline = time.time() + 25.0
+        h = client.get("/health").json()
+        while not h["located"] and time.time() < deadline:
+            time.sleep(0.05)
+            h = client.get("/health").json()
+        assert h["located"]
+
+        en = client.get("/broadcast.mp3?lang=en")
+        assert en.status_code == 200
+        assert en.headers["content-type"] == "audio/mpeg"
+        assert en.content == b"FAKE_MP3"
+
+        assert client.get("/broadcast.mp3?lang=es").status_code == 404  # no Aura Spanish voice -> fallback
+
+
 def test_map_base_changes_during_search(monkeypatch):
     """
     Scenario: capture the base image at an early search frame and a later one.

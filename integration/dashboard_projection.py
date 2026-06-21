@@ -117,6 +117,9 @@ class ProjectionContext:
     # Multi-drone fleet (search phase) + the frame index that keys the base image to the vectors.
     drones: Optional[List[DroneVector]] = None
     frame: int = 0
+    # The subject broadcast payload ({texts, langs, audioLangs, timestamp}) once located; None
+    # during search. Pre-built by the server (compose_broadcast); the projection passes it through.
+    subject_broadcast: Optional[Dict[str, Any]] = None
 
 
 # --- small formatting / geometry helpers (pure) ---
@@ -453,4 +456,6 @@ def project(map_state: MapState, context: Optional[ProjectionContext] = None) ->
         "subjectPos": _cell_to_norm(ctx.subject_cell, grid) if ctx.subject_cell else None,
         "operatorPos": _cell_to_norm(ctx.home_cell, grid) if ctx.home_cell else None,
         "guidanceStatus": ctx.guidance_status,
+        # --- voice: the spoken subject-broadcast (null during search) ---
+        "subjectBroadcast": ctx.subject_broadcast,
     }

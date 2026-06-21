@@ -27,9 +27,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.common.contracts import CameraPose, Cell, LocatedEvent, Status
 from src.demo.search_demo import _DRONE_COLORS
 from src.demo.search_and_guide import _guiding_drone_id, run_combined
+from integration.broadcast import compose_broadcast
 from integration.dashboard_projection import DroneVector, ProjectionContext, project
+from integration.deepgram_tts import deepgram_api_key, synthesize
 from integration.map_render import base_hillshade, render_base_frame
 from integration.terrain_render import render_terrain_png
+
+# Languages we can voice with a Deepgram Aura model. English is mapped; other languages (e.g.
+# Spanish) fall back to the browser's TTS in the dashboard (Aura is English-first). Adding a
+# Deepgram Spanish voice here later is a one-line change.
+_LANG_VOICE = {"en": "aura-2-thalia-en"}
 
 # Seconds between frames — the demo cadence. A display tunable, not part of the math.
 _STEP_INTERVAL_S = float(os.environ.get("SAR_STEP_INTERVAL", "0.7"))
@@ -151,6 +158,20 @@ class LoopRunner:
         # Not pre-latched: /located stays empty until the PLAYBACK reaches the locate frame
         # (the _advance latch fires when persons_found flips to 1), so the event appears live.
         self._located = None
+
+        # Subject broadcast: compose the spoken message ONCE (the run located); audio is
+        # synthesized lazily per language by /broadcast.mp3 and cached. Exposed in /state only
+        # from the locate frame onward (like /located), so it appears live, not at t0.
+        if result.located_event is not None:
+            self._broadcast_texts: Optional[Dict[str, str]] = compose_broadcast(result.located_event)
+            self._located_search_index = next(
+                (j for j, f in enumerate(self._search_frames) if f.status == "located"), self._n_search - 1
+            )
+        else:
+            self._broadcast_texts = None
+            self._located_search_index = self._n_total  # never
+        self._audio_langs = list(_LANG_VOICE.keys()) if deepgram_api_key() else []
+        self._broadcast_audio: Dict[str, bytes] = {}
         try:
             self._terrain_png = render_terrain_png(self._grid)  # superseded by the base image, kept for /terrain.png
         except FileNotFoundError:
@@ -202,6 +223,9 @@ class LoopRunner:
             the search phase, the leader + guide overlay in the guide phase — all keyed to `i` so
             the client can fetch the matching base image.
         """
+        # The spoken subject broadcast appears from the locate frame onward (else None).
+        broadcast = self._broadcast_payload() if i >= self._located_search_index else None
+
         if i < self._n_search:
             frame = self._search_frames[i]
             map_state = frame.map_state
@@ -222,6 +246,7 @@ class LoopRunner:
                 trend=list(self._trend), started_at="live",
                 located_cell=map_state.top_cells[0][0] if located else None,
                 guidance_status="searching",
+                subject_broadcast=broadcast,
             )
             return project(map_state, ctx)
 
@@ -238,6 +263,7 @@ class LoopRunner:
             located_cell=map_state.top_cells[0][0],
             guidance_path=self._guidance_path, subject_cell=gs.subject_cell,
             guidance_status="arrived" if gi >= self._n_guide - 1 else "guiding",
+            subject_broadcast=broadcast,
         )
         return project(map_state, ctx)
 
@@ -334,6 +360,57 @@ class LoopRunner:
         """The cached colorized terrain PNG (superseded by the base image; kept for /terrain.png)."""
         return self._terrain_png
 
+    def _broadcast_payload(self) -> Optional[Dict[str, Any]]:
+        """
+        The /state `subjectBroadcast` dict, or None if the run never located.
+
+        Returns:
+            {texts: {lang: message}, langs: [...], audioLangs: [langs with Deepgram audio],
+             timestamp}. `audioLangs` tells the dashboard which languages to play via
+            /broadcast.mp3 (Deepgram) vs. the browser-TTS fallback.
+
+        Why:
+            Built from the already-composed message; the dashboard shows the text and decides
+            per language whether to fetch Deepgram audio or speak it locally.
+        """
+        if self._broadcast_texts is None:
+            return None
+        ts = self._result.located_event.timestamp if self._result.located_event else 0.0
+        return {
+            "texts": self._broadcast_texts,
+            "langs": list(self._broadcast_texts.keys()),
+            "audioLangs": self._audio_langs,
+            "timestamp": str(int(ts)),
+        }
+
+    def broadcast_audio(self, lang: str) -> Optional[bytes]:
+        """
+        Deepgram-synthesized audio for the broadcast in `lang` (cached), or None.
+
+        Args:
+            lang: Language code (e.g. "en").
+
+        Returns:
+            MP3 bytes, or None if: not yet located in the playback, no Deepgram key, or the
+            language has no mapped Aura voice — in which case the dashboard falls back to browser TTS.
+
+        Why:
+            Synthesized lazily on first request and cached per language (one Deepgram call per
+            language per run). Gated behind the playback's locate so the audio appears live.
+        """
+        if self._broadcast_texts is None or self._i < self._located_search_index:
+            return None
+        voice = _LANG_VOICE.get(lang)
+        text = self._broadcast_texts.get(lang)
+        if voice is None or text is None:
+            return None
+        if lang not in self._broadcast_audio:
+            audio = synthesize(text, voice=voice)
+            if audio is None:
+                return None
+            self._broadcast_audio[lang] = audio
+        return self._broadcast_audio[lang]
+
     def _status(self) -> str:
         """Current phase: searching / guiding / arrived. Why: /health + tests poll this."""
         if self._i < self._n_search or not self._n_guide:
@@ -429,6 +506,21 @@ def get_terrain() -> Response:
     if png is None:
         return Response(status_code=404)
     return Response(content=png, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
+
+@app.get("/broadcast.mp3")
+def get_broadcast(lang: str = "en") -> Response:
+    """
+    The Deepgram-voiced subject broadcast audio for `lang`, or 404.
+
+    Why:
+        The dashboard's "Speak Message" plays this (the sponsor voice) once located; a 404 (no
+        key / unsupported language / not yet located) tells the client to fall back to browser TTS.
+    """
+    audio = runner.broadcast_audio(lang)
+    if audio is None:
+        return Response(status_code=404)
+    return Response(content=audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
 
 
 @app.post("/reset")
