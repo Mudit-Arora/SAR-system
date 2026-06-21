@@ -12,6 +12,10 @@
 # Virtual environment
 **/venv
 **/env
+# NOTE: the patterns above match "venv"/"env" but NOT ".venv" (the dot makes it a
+# different name), so exclude the dotted form explicitly — otherwise COPY . . bakes
+# the local (macOS) .venv into the Fly image.
+**/.venv
 
 # System files
 **/.DS_Store
