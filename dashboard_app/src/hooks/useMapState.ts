@@ -16,10 +16,7 @@
 import { useEffect, useState } from 'react'
 import type { MapState } from '../types'
 import { mockState } from '../data/mockState'
-
-// Where the integration server lives. Defaults to the local uvicorn (port 8000); override
-// with VITE_API_BASE in the environment for a deployed backend.
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
+import { API_BASE } from '../lib/api'
 
 // Poll cadence. ~1s is plenty: the loop advances at ~0.7s/frame, and the read model is a
 // cheap snapshot — we just want the map to visibly evolve, not stream every micro-update.

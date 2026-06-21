@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Plus, Minus, Layers, Navigation, Info, X } from 'lucide-react'
 import type { MapState } from '../types'
 import { heatColor } from '../lib/colors'
+import { API_BASE } from '../lib/api'
 
 interface Props {
   state: MapState
@@ -9,6 +10,7 @@ interface Props {
   showPath: boolean
   showDetections: boolean
   showSearched: boolean
+  showTerrain: boolean
 }
 
 // Renders the probability heatmap onto a canvas by summing gaussian blobs,
@@ -66,9 +68,14 @@ export default function ProbabilityMap({
   showPath,
   showDetections,
   showSearched,
+  showTerrain,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   useHeatmap(canvasRef, state.heatBlobs, showHeat)
+
+  // Real-terrain backdrop served by the integration server. If it fails to load (server
+  // offline / no rasters), fall back to the procedural backdrop underneath it.
+  const [terrainOk, setTerrainOk] = useState(true)
 
   const pathD = state.flightPath
     .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x * 100} ${p.y * 100}`)
@@ -78,7 +85,8 @@ export default function ProbabilityMap({
 
   return (
     <div className="panel relative flex-1 overflow-hidden">
-      {/* Terrain base (procedural forest look) */}
+      {/* Terrain base (procedural forest look) — the fallback when the real terrain image
+          is off (toggle) or unavailable (server offline / no rasters -> onError). */}
       <div className="absolute inset-0 bg-base-950" />
       <div
         className="absolute inset-0 opacity-90"
@@ -89,6 +97,18 @@ export default function ProbabilityMap({
             'repeating-linear-gradient(-42deg, rgba(0,0,0,0.12) 0px, rgba(0,0,0,0.12) 1px, transparent 1px, transparent 13px)',
         }}
       />
+
+      {/* Real Marin terrain (muted colorized shaded relief). object-fill stretches it to the
+          same normalized 0..1 box every overlay uses, so terrain + heat + markers stay aligned. */}
+      {showTerrain && terrainOk && (
+        <img
+          src={`${API_BASE}/terrain.png`}
+          alt=""
+          draggable={false}
+          onError={() => setTerrainOk(false)}
+          className="absolute inset-0 h-full w-full object-fill"
+        />
+      )}
 
       {/* Heatmap */}
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full mix-blend-screen" />

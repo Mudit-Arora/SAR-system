@@ -64,6 +64,7 @@ export default function App() {
                 showPath={layerOn['path']}
                 showDetections={layerOn['detections']}
                 showSearched={layerOn['searched']}
+                showTerrain={layerOn['terrain']}
               />
             </div>
 
