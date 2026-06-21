@@ -11,11 +11,15 @@ import ProbabilityTrend from './components/ProbabilityTrend'
 import MapUpdateSummary from './components/MapUpdateSummary'
 import VoiceComms from './components/VoiceComms'
 import LiveTranscript from './components/LiveTranscript'
-import { mockState } from './data/mockState'
+import { useMapState } from './hooks/useMapState'
 
 export default function App() {
+  // Live MapState from the brain's integration server (falls back to mockState when offline).
+  const state = useMapState()
+
   // Local copy so layer toggles are interactive (dashboard reads state; toggles are view-only).
-  const [layers, setLayers] = useState(mockState.layers)
+  // Seeded once from the first state; the layer list is static, so polling never clobbers a toggle.
+  const [layers, setLayers] = useState(state.layers)
 
   const toggleLayer = (id: string) =>
     setLayers((ls) => ls.map((l) => (l.id === id ? { ...l, enabled: !l.enabled } : l)))
@@ -31,9 +35,9 @@ export default function App() {
 
       <div className="flex min-h-0 flex-1">
         <MissionSidebar
-          missionName={mockState.missionName}
-          startedAt={mockState.startedAt}
-          stats={mockState.stats}
+          missionName={state.missionName}
+          startedAt={state.startedAt}
+          stats={state.stats}
           layers={layers}
           onToggleLayer={toggleLayer}
         />
@@ -43,11 +47,11 @@ export default function App() {
           {/* Top strip: loop + confidence + live feed header sit across the row */}
           <div className="flex gap-3">
             <div className="min-w-0 flex-1">
-              <SearchLoop steps={mockState.loop} />
+              <SearchLoop steps={state.loop} />
             </div>
             <ConfidencePanel
-              confidence={mockState.confidenceToDeclare}
-              threshold={mockState.declareThreshold}
+              confidence={state.confidenceToDeclare}
+              threshold={state.declareThreshold}
             />
           </div>
 
@@ -55,7 +59,7 @@ export default function App() {
           <div className="flex min-h-[440px] flex-1 gap-3">
             <div className="flex min-w-0 flex-1 flex-col">
               <ProbabilityMap
-                state={mockState}
+                state={state}
                 showHeat={layerOn['prob']}
                 showPath={layerOn['path']}
                 showDetections={layerOn['detections']}
@@ -64,16 +68,16 @@ export default function App() {
             </div>
 
             <div className="flex w-[320px] shrink-0 flex-col gap-3">
-              <LiveVideoFeed telemetry={mockState.telemetry} />
-              <DetectionsList detections={mockState.detections} />
+              <LiveVideoFeed telemetry={state.telemetry} />
+              <DetectionsList detections={state.detections} />
             </div>
           </div>
 
           {/* Bottom row */}
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-            <ProbabilityTrend data={mockState.trend} now={mockState.confidenceToDeclare} />
-            <MapUpdateSummary lastUpdate={mockState.telemetry.feedTime} />
-            <VoiceComms commands={mockState.recentCommands} />
+            <ProbabilityTrend data={state.trend} now={state.confidenceToDeclare} />
+            <MapUpdateSummary lastUpdate={state.telemetry.feedTime} />
+            <VoiceComms commands={state.recentCommands} />
           </div>
 
           {/* Live transcript from the deployed voice agent (real data) */}
