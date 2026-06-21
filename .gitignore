@@ -17,6 +17,8 @@ runs/*
 !runs/.gitkeep
 
 *.pt
+!models/model.pt
+!yolo11s.pt
 *.onnx
 *.engine
 *.mp4

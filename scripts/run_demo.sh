@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL_PATH="${1:-runs/detect/thermal_person_yolo11s/weights/best.pt}"
+MODEL_PATH="${1:-models/model.pt}"
 VIDEO_PATH="${2:-data/demo_footage/thermal_demo.mp4}"
 OUTPUT_PATH="${3:-outputs/thermal_demo_annotated.mp4}"
 PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python}"

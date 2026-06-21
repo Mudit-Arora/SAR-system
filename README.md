@@ -125,7 +125,7 @@ Put a video in `data/demo_footage/`, then run:
 
 ```bash
 python -m sar_demo.infer_video \
-  --model runs/detect/thermal_person_yolo11s/weights/best.pt \
+  --model models/model.pt \
   --video data/demo_footage/thermal_demo.mp4 \
   --output outputs/thermal_demo_annotated.mp4 \
   --conf 0.25 \
