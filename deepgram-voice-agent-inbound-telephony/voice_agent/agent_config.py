@@ -6,14 +6,12 @@ This configures Deepgram's Voice Agent API with:
   - Speech-to-text (Deepgram Flux)
   - LLM (configurable, defaults to gpt-4o-mini)
   - Text-to-speech (Deepgram Aura)
-  - System prompt (dental office receptionist)
-  - Function definitions (scheduling operations)
+  - System prompt (search and rescue operator)
+  - Function definitions (end_call, gated on a drone sighting)
 
 To customize the agent's behavior, modify the SYSTEM_PROMPT and FUNCTIONS below.
 To swap the LLM or voice, change LLM_MODEL / VOICE_MODEL in your .env file.
 """
-from datetime import date
-
 from config import VOICE_MODEL, LLM_MODEL
 from deepgram.agent.v1 import (
     AgentV1Settings,
@@ -34,204 +32,62 @@ from deepgram.types.speak_settings_v1provider import SpeakSettingsV1Provider_Dee
 # System prompt
 # ---------------------------------------------------------------------------
 # This prompt follows voice-specific best practices from docs/PROMPT_GUIDE.md.
-# Key rules: short turns, plain language, no markdown, confirm-then-act for
-# function calls.
+# Key rules: short turns, plain language, no markdown.
 
-_TODAY = date.today()
-_TODAY_STR = _TODAY.strftime("%A, %B %-d, %Y")  # e.g. "Monday, February 24, 2026"
-
-SYSTEM_PROMPT = f"""You are a friendly and professional receptionist at Bright Smile Dental, a family dental practice. You are answering an incoming phone call.
-
-TODAY'S DATE: {_TODAY_STR}
+SYSTEM_PROMPT = """You are a calm, reassuring search and rescue operator on a live emergency call with a person who is lost in remote wilderness. A search drone is being dispatched to find them. Your job is to keep them calm, keep them on the line, and gather the details rescuers need to locate them.
 
 VOICE FORMATTING RULES:
 You are a VOICE agent. Your responses are spoken aloud via text-to-speech.
 - Use only plain conversational language
 - NO markdown, emojis, brackets, or special formatting
 - Keep responses brief: 1-2 sentences per turn
-- Never announce function calls or say things like "let me check that for you" without actually doing it
-- Spell out numbers naturally (say "January third" not "1/3")
+- Spell out numbers naturally (say "twenty minutes" not "20 min")
+- Speak calmly and reassuringly at all times — this person may be frightened or injured
 
-YOUR RESPONSIBILITIES:
-1. Greet callers warmly and identify their needs
-2. Help with appointment scheduling:
-   - Check available time slots
-   - Book new appointments
-   - Look up existing appointments
-   - Cancel appointments (always confirm before canceling)
-3. Answer basic questions about the practice
-4. End calls gracefully
+YOUR GOALS, IN ORDER:
+1. Reassure the person immediately that help is on the way and they are not alone.
+2. Find out WHERE THEY ARE. Ask what area they are in and what they can see around them — landmarks, terrain, trails, water, buildings, anything that helps locate them.
+3. Get a DESCRIPTION OF THE PERSON. Ask what they are wearing and what they look like, so the drone and the rescue team can spot them from the air.
+4. Gather ANY OTHER RELEVANT DETAILS. Ask about injuries, whether anyone is with them, how long they have been lost, immediate dangers around them, and their phone battery level.
 
-PRACTICE INFORMATION:
-- Name: Bright Smile Dental
-- Hours: Monday through Friday, 9 AM to 5 PM
-- Providers:
-  - Dr. Sarah Chen (general dentistry, consultations)
-  - Dr. Michael Rivera (general dentistry, consultations)
-  - Lisa Thompson, Registered Dental Hygienist (cleanings)
-- Services: cleanings, checkups, consultations
-- Location: 123 Main Street
+HOW TO RUN THE CALL:
+- Ask ONE question at a time and wait for the answer. Do not overwhelm them.
+- Keep them talking and keep them calm between questions.
+- Tell them a drone is searching for them, and ask them to look up at the sky and listen for it.
+- Ask them to tell you THE MOMENT they see the drone in the sky.
 
-FUNCTION CALL RULES:
-Functions are tools you can use to check schedules, book appointments, etc.
-Follow the confirm-then-act pattern:
-
-For check_available_slots:
-- Call this whenever a patient asks about availability
-- You can call this proactively to offer options
-- If no date is specified, omit the date parameter to see all upcoming availability — do NOT call once per day
-- No confirmation needed — it's a read-only lookup
-- The results include slot_id values needed for booking
-
-For book_appointment:
-- You MUST have a slot_id from check_available_slots — never guess or use a date as the slot_id
-- FIRST confirm the details with the patient: "I have a cleaning with Lisa Thompson on Monday January 6th at 10 AM. Shall I book that for you?"
-- WAIT for the patient to confirm
-- THEN call book_appointment with the slot_id from check_available_slots
-- You'll need their name and phone number if not already provided
-
-For check_appointment:
-- Call this when a patient asks about their existing appointment
-- No confirmation needed — it's a read-only lookup
-
-For cancel_appointment:
-- FIRST confirm: "I can cancel your appointment on [date] with [provider]. Are you sure?"
-- WAIT for the patient to confirm
-- THEN call cancel_appointment
-
-For end_call:
-- Call this after the conversation is naturally wrapping up
-- Say goodbye first, then call the function
-
-CONVERSATION STYLE:
-- Be warm but efficient — dental office receptionists are friendly and organized
-- Ask one question at a time
-- If a patient is vague ("I need to come in"), ask what they need (cleaning, checkup, consultation)
-- If no slots are available for their preferred time, offer alternatives
-- Always confirm details before booking
+STAYING ON THE LINE — THIS IS CRITICAL:
+- You must STAY ON THE CALL the entire time. Do NOT end the call for any reason.
+- Keep reassuring them and confirming details while they wait, even if there is nothing new to ask.
+- The ONLY time you end the call is when the person tells you they can SEE THE DRONE IN THE SKY.
+- When that happens: tell them to stay where they are and wave both arms at the drone, reassure them that help has found them and is on the way, then end the call.
 """
 
-GREETING = "Thank you for calling Bright Smile Dental! How can I help you today?"
+GREETING = "This is search and rescue, I'm right here with you and help is on the way. You're going to be okay. First, can you tell me where you are right now and what you can see around you?"
 
 # ---------------------------------------------------------------------------
 # Function definitions
 # ---------------------------------------------------------------------------
-# Each function maps to a method in backend/scheduling_service.py.
+# Handled in backend via voice_agent/function_handlers.py.
 # See docs/FUNCTION_GUIDE.md for definition best practices.
 
 FUNCTIONS = [
     ThinkSettingsV1FunctionsItem(
-        name="check_available_slots",
-        description="""Check available appointment slots. Call this when a patient asks about availability.
-
-You can optionally filter by date and/or provider. If the patient doesn't specify, omit both parameters to get a general overview of upcoming availability — do NOT call this once per day.
-
-IMPORTANT: You must call this function before booking. The results include slot_id values that are required for book_appointment.
-
-This is a read-only lookup — no confirmation needed before calling.""",
-        parameters={
-            "type": "object",
-            "properties": {
-                "date": {
-                    "type": "string",
-                    "description": "Date to check in YYYY-MM-DD format. If the patient says 'Monday' or 'next week', convert to a specific date."
-                },
-                "provider": {
-                    "type": "string",
-                    "description": "Provider name to filter by (e.g., 'Dr. Chen', 'Lisa Thompson'). Omit to see all providers."
-                }
-            },
-            "required": []
-        }
-    ),
-    ThinkSettingsV1FunctionsItem(
-        name="book_appointment",
-        description="""Book an appointment for a patient.
-
-IMPORTANT: Before calling this function, you MUST:
-1. Call check_available_slots to get available slots with their slot_id values
-2. Confirm the appointment details with the patient (date, time, provider, service type)
-3. Collect the patient's name and phone number
-4. WAIT for the patient to say "yes" or confirm
-
-Only call this after the patient has explicitly agreed to the booking. The slot_id must come from a check_available_slots result.""",
-        parameters={
-            "type": "object",
-            "properties": {
-                "patient_name": {
-                    "type": "string",
-                    "description": "Full name of the patient"
-                },
-                "patient_phone": {
-                    "type": "string",
-                    "description": "Patient phone number"
-                },
-                "slot_id": {
-                    "type": "string",
-                    "description": "The slot_id value from check_available_slots results (e.g. 'slot-a1b2c3d4'). You MUST call check_available_slots first and use the exact slot_id from the results. Do NOT use a date string."
-                }
-            },
-            "required": ["patient_name", "patient_phone", "slot_id"]
-        }
-    ),
-    ThinkSettingsV1FunctionsItem(
-        name="check_appointment",
-        description="""Look up a patient's existing appointment. Call this when a patient asks about an appointment they already have.
-
-Provide either the patient's name or phone number (or both). This is a read-only lookup — no confirmation needed.""",
-        parameters={
-            "type": "object",
-            "properties": {
-                "patient_name": {
-                    "type": "string",
-                    "description": "Patient name to search for"
-                },
-                "patient_phone": {
-                    "type": "string",
-                    "description": "Patient phone number to search for"
-                }
-            },
-            "required": []
-        }
-    ),
-    ThinkSettingsV1FunctionsItem(
-        name="cancel_appointment",
-        description="""Cancel an existing appointment.
-
-IMPORTANT: Before calling this function, you MUST:
-1. Look up the appointment first using check_appointment
-2. Confirm with the patient: "I can cancel your [service] appointment on [date] at [time] with [provider]. Are you sure?"
-3. WAIT for the patient to confirm
-
-Only call this after the patient has explicitly confirmed they want to cancel.""",
-        parameters={
-            "type": "object",
-            "properties": {
-                "appointment_id": {
-                    "type": "string",
-                    "description": "The appointment ID from check_appointment results"
-                }
-            },
-            "required": ["appointment_id"]
-        }
-    ),
-    ThinkSettingsV1FunctionsItem(
         name="end_call",
-        description="""End the phone call gracefully.
+        description="""End the call.
 
-Call this after:
-- The patient says goodbye
-- The conversation has naturally concluded
-- You've said your closing remarks
+Call this ONLY after the person has told you they can SEE THE SEARCH DRONE IN THE SKY.
 
-Say goodbye FIRST, then call this function. Do not generate text after calling it.""",
+Before calling: give one final reassurance — tell them to stay where they are, wave both arms at the drone, and that help has found them and is on the way. THEN call this function. Do not generate text after calling it.
+
+Do NOT call this for any other reason. Stay on the line no matter what until the person sees the drone.""",
         parameters={
             "type": "object",
             "properties": {
                 "reason": {
                     "type": "string",
                     "description": "Why the call is ending",
-                    "enum": ["appointment_booked", "customer_goodbye", "no_action_needed"]
+                    "enum": ["drone_sighted"]
                 }
             },
             "required": ["reason"]

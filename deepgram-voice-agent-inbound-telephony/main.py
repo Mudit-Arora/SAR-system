@@ -13,14 +13,17 @@ For local development without Twilio:
   Terminal 2:  python dev_client.py
 """
 import logging
+import os
 
 import uvicorn
 from starlette.applications import Starlette
 from starlette.routing import Route, WebSocketRoute
-from starlette.responses import PlainTextResponse
+from starlette.responses import FileResponse, PlainTextResponse
+from starlette.websockets import WebSocket
 
 from config import SERVER_HOST, SERVER_PORT, SERVER_EXTERNAL_URL, DEEPGRAM_API_KEY
 from telephony.routes import incoming_call, twilio_websocket
+from voice_agent.transcript_broadcast import broadcaster
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -33,11 +36,40 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+DASHBOARD_HTML = os.path.join(os.path.dirname(__file__), "static", "dashboard.html")
+
+
 async def dashboard(request):
+    """Serve the live transcript dashboard.
+
+    The page opens a WebSocket to /transcript and renders each conversation
+    turn (and call start/end events) in real time.
+    """
+    if os.path.exists(DASHBOARD_HTML):
+        return FileResponse(DASHBOARD_HTML)
     return PlainTextResponse(
         "Telephony Voice Agent is running.\n"
         "Call your Twilio number or use `python dev_client.py` to test locally."
     )
+
+
+async def transcript_feed(websocket: WebSocket):
+    """Live transcript feed for the dashboard.
+
+    The dashboard connects here and receives each conversation turn (and
+    call start/end events) as JSON, in real time.  Read-only: we don't
+    expect any messages from the dashboard, we just keep the socket open.
+    """
+    await websocket.accept()
+    await broadcaster.register(websocket)
+    try:
+        while True:
+            # Block on receive purely to detect disconnect.
+            await websocket.receive_text()
+    except Exception:
+        pass
+    finally:
+        await broadcaster.unregister(websocket)
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +81,7 @@ app = Starlette(
         Route("/incoming-call", incoming_call, methods=["POST"]),
         WebSocketRoute("/twilio/{token:path}", twilio_websocket),
         WebSocketRoute("/twilio", twilio_websocket),
+        WebSocketRoute("/transcript", transcript_feed),
         Route("/", dashboard),
     ],
 )

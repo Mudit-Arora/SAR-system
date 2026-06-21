@@ -25,6 +25,9 @@ Thumbs.db
 # Setup wizard state
 .setup_state.json
 
+# Call transcripts (temporary txt store; switching to a database later)
+transcripts/
+
 # Misc
 .cursorindexingignore
 .specstory/

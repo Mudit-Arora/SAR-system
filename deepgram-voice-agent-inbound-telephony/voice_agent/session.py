@@ -20,6 +20,7 @@ import asyncio
 import base64
 import json
 import logging
+from datetime import datetime
 
 from starlette.websockets import WebSocket
 
@@ -38,6 +39,8 @@ from deepgram.agent.v1 import (
 from deepgram.agent.v1.socket_client import V1SocketClientResponse
 
 from voice_agent.agent_config import get_agent_config
+from voice_agent.transcript_broadcast import broadcaster
+from backend.transcript_store import TranscriptStore
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,9 @@ class VoiceAgentSession:
         self.twilio_ws = twilio_ws
         self.call_sid = call_sid
         self.stream_sid = stream_sid
+
+        # Conversation transcript, written to a .txt file (one per call).
+        self.transcript = TranscriptStore(call_sid)
 
         # Deepgram connection state
         self._client = None
@@ -93,6 +99,11 @@ class VoiceAgentSession:
         try:
             await asyncio.wait_for(self._settings_applied.wait(), timeout=5.0)
             logger.info(f"[SESSION:{self.call_sid}] Settings applied - ready for audio")
+            await broadcaster.publish({
+                "type": "call_started",
+                "call_sid": self.call_sid,
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            })
         except asyncio.TimeoutError:
             logger.error(f"[SESSION:{self.call_sid}] Timeout waiting for settings to be applied")
             raise
@@ -148,6 +159,23 @@ class VoiceAgentSession:
 
         self._connection = None
         self._client = None
+
+        # Finalize the transcript file.
+        try:
+            self.transcript.close()
+        except Exception as e:
+            logger.debug(f"[SESSION:{self.call_sid}] Error closing transcript: {e}")
+
+        # Tell dashboards the call has ended.
+        try:
+            await broadcaster.publish({
+                "type": "call_ended",
+                "call_sid": self.call_sid,
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            })
+        except Exception as e:
+            logger.debug(f"[SESSION:{self.call_sid}] Error broadcasting call end: {e}")
+
         logger.info(f"[SESSION:{self.call_sid}] Cleanup complete")
 
     # ------------------------------------------------------------------
@@ -202,9 +230,17 @@ class VoiceAgentSession:
             elif isinstance(message, AgentV1FunctionCallRequest):
                 await self._handle_function_call(message)
 
-            # Transcript text → log it
+            # Transcript text → log it, write to file, and push to dashboards
             elif isinstance(message, AgentV1ConversationText):
                 logger.info(f"[SESSION:{self.call_sid}] {message.role.upper()}: {message.content}")
+                self.transcript.append(message.role, message.content)
+                await broadcaster.publish({
+                    "type": "turn",
+                    "call_sid": self.call_sid,
+                    "role": message.role,
+                    "content": message.content,
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                })
 
             # User started speaking → tell Twilio to stop playing agent audio
             elif isinstance(message, AgentV1UserStartedSpeaking):
