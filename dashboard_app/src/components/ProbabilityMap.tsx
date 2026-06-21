@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Plus, Minus, Layers, Navigation, Info, X } from 'lucide-react'
+import { Plus, Minus, Layers, Navigation, Info, X, Home } from 'lucide-react'
 import type { MapState } from '../types'
 import { heatColor } from '../lib/colors'
 import { API_BASE } from '../lib/api'
@@ -83,6 +83,15 @@ export default function ProbabilityMap({
 
   const primary = state.detections.find((d) => d.isPrimary)
 
+  // Guide-home phase: the drone leads the located subject back to the operators. We draw the
+  // planned route, the operators/home marker, the moving subject (follower), and a line of
+  // sight tether to the drone (the leader = dronePos). Active only while guiding/arrived.
+  const guiding = state.guidanceStatus === 'guiding' || state.guidanceStatus === 'arrived'
+  const guidanceD =
+    state.guidancePath && state.guidancePath.length
+      ? state.guidancePath.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x * 100} ${p.y * 100}`).join(' ')
+      : ''
+
   return (
     <div className="panel relative flex-1 overflow-hidden">
       {/* Terrain base (procedural forest look) — the fallback when the real terrain image
@@ -130,10 +139,60 @@ export default function ProbabilityMap({
             className="animate-dash"
           />
         )}
+
+        {/* Guide-home: the planned walkable route back to the operators (green dashed). */}
+        {guiding && guidanceD && (
+          <path
+            d={guidanceD}
+            fill="none"
+            stroke="#7CFC00"
+            strokeWidth={0.6}
+            strokeDasharray="1.6 1.2"
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+
+        {/* Line-of-sight tether: the subject (follower) to the drone (leader = dronePos). */}
+        {guiding && state.subjectPos && (
+          <line
+            x1={state.subjectPos.x * 100}
+            y1={state.subjectPos.y * 100}
+            x2={state.dronePos.x * 100}
+            y2={state.dronePos.y * 100}
+            stroke="gold"
+            strokeWidth={0.5}
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
       </svg>
 
       {/* Marker overlay (non-distorting, uses % positioning) */}
       <div className="absolute inset-0">
+        {/* Guide-home: operators/home marker + the moving subject (follower). */}
+        {guiding && state.operatorPos && (
+          <div
+            className="absolute -translate-x-1/2 -translate-y-1/2"
+            style={{ left: `${state.operatorPos.x * 100}%`, top: `${state.operatorPos.y * 100}%` }}
+          >
+            <div className="grid h-6 w-6 place-items-center rounded-sm bg-white text-base-950 shadow ring-2 ring-black/40">
+              <Home className="h-3.5 w-3.5" />
+            </div>
+            <span className="absolute left-7 top-1/2 -translate-y-1/2 whitespace-nowrap text-[10px] font-bold text-white drop-shadow">
+              operators
+            </span>
+          </div>
+        )}
+        {guiding && state.subjectPos && (
+          <div
+            className="absolute -translate-x-1/2 -translate-y-1/2"
+            style={{ left: `${state.subjectPos.x * 100}%`, top: `${state.subjectPos.y * 100}%` }}
+            title="subject (following)"
+          >
+            <span className="absolute left-1/2 top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent-red/30 animate-pulseRing" />
+            <div className="relative h-3.5 w-3.5 rounded-full bg-accent-red ring-2 ring-white/80" />
+          </div>
+        )}
+
         {showSearched &&
           state.waypoints
             .filter((w) => w.kind === 'searched')
