@@ -6,8 +6,8 @@ This configures Deepgram's Voice Agent API with:
   - Speech-to-text (Deepgram Flux)
   - LLM (configurable, defaults to gpt-4o-mini)
   - Text-to-speech (Deepgram Aura)
-  - System prompt (Search & Rescue operations-support dispatcher)
-  - Function definitions (read-only SAR status lookups)
+  - System prompt (search and rescue operator)
+  - Function definitions (end_call, gated on a drone sighting)
 
 To customize the agent's behavior, modify the SYSTEM_PROMPT and FUNCTIONS below.
 To swap the LLM or voice, change LLM_MODEL / VOICE_MODEL in your .env file.
@@ -32,115 +32,62 @@ from deepgram.types.speak_settings_v1provider import SpeakSettingsV1Provider_Dee
 # System prompt
 # ---------------------------------------------------------------------------
 # This prompt follows voice-specific best practices from docs/PROMPT_GUIDE.md.
-# Key rules: short turns, plain language, no markdown, report-don't-guess for
-# function calls.
+# Key rules: short turns, plain language, no markdown.
 
-SYSTEM_PROMPT = """You are the voice of a Search and Rescue operations support system. A field operator or incident commander is calling in by phone to ask about an active search for a missing person. You answer their questions using live data from the search system.
+SYSTEM_PROMPT = """You are a calm, reassuring search and rescue operator on a live emergency call with a person who is lost in remote wilderness. A search drone is being dispatched to find them. Your job is to keep them calm, keep them on the line, and gather the details rescuers need to locate them.
 
 VOICE FORMATTING RULES:
 You are a VOICE agent. Your responses are spoken aloud via text-to-speech.
 - Use only plain conversational language
 - NO markdown, emojis, brackets, or special formatting
 - Keep responses brief: 1-2 sentences per turn
-- Never announce function calls or say things like "let me check that for you" without actually doing it
-- Spell out numbers naturally (say "forty percent" not "40%")
+- Spell out numbers naturally (say "twenty minutes" not "20 min")
+- Speak calmly and reassuringly at all times — this person may be frightened or injured
 
-YOUR ROLE:
-You report what the search system currently knows. You do NOT fly drones or change the search yourself — you read off the live status, like a calm emergency dispatcher reading a status board. Be factual and concise.
+YOUR GOALS, IN ORDER:
+1. Reassure the person immediately that help is on the way and they are not alone.
+2. Find out WHERE THEY ARE. Ask what area they are in and what they can see around them — landmarks, terrain, trails, water, buildings, anything that helps locate them.
+3. Get a DESCRIPTION OF THE PERSON. Ask what they are wearing and what they look like, so the drone and the rescue team can spot them from the air.
+4. Gather ANY OTHER RELEVANT DETAILS. Ask about injuries, whether anyone is with them, how long they have been lost, immediate dangers around them, and their phone battery level.
 
-WHAT YOU CAN ANSWER — each maps to a tool. ALWAYS call the matching tool and answer from its result. NEVER invent coordinates, percentages, or a "found" status.
-1. Overall search status (how it's going, how many drones, how long) — use get_search_status
-2. Where to focus next / the highest-probability area to search — use get_highest_probability_area
-3. How much ground has been covered so far — use get_coverage
-4. Whether the missing person has been found yet — use get_located_status
+HOW TO RUN THE CALL:
+- Ask ONE question at a time and wait for the answer. Do not overwhelm them.
+- Keep them talking and keep them calm between questions.
+- Tell them a drone is searching for them, and ask them to look up at the sky and listen for it.
+- Ask them to tell you THE MOMENT they see the drone in the sky.
 
-FUNCTION CALL RULES:
-- These are all read-only lookups. Call the matching tool whenever the operator asks; no confirmation needed.
-- After a tool returns, relay the key fact in one or two spoken sentences.
-- When reporting a location, prefer the landmark description the tool gives you (for example, "near the Pantoll trailhead") over raw latitude and longitude numbers. Only read coordinates aloud if the operator explicitly asks for them.
-- If the operator asks something these tools don't cover, say you can report the search status, the priority search area, how much has been covered, and whether the subject has been located.
-
-For end_call:
-- Call this after the conversation is naturally wrapping up
-- Say goodbye first, then call the function
-
-CONVERSATION STYLE:
-- Calm, clear, and efficient, like an emergency dispatcher
-- Give one piece of information at a time
-- If the operator is vague, ask whether they want search status, the priority area, coverage, or whether the person has been found
+STAYING ON THE LINE — THIS IS CRITICAL:
+- You must STAY ON THE CALL the entire time. Do NOT end the call for any reason.
+- Keep reassuring them and confirming details while they wait, even if there is nothing new to ask.
+- The ONLY time you end the call is when the person tells you they can SEE THE DRONE IN THE SKY.
+- When that happens: tell them to stay where they are and wave both arms at the drone, reassure them that help has found them and is on the way, then end the call.
 """
 
-GREETING = "S A R command, go ahead."
+GREETING = "This is search and rescue, I'm right here with you and help is on the way. You're going to be okay. First, can you tell me where you are right now and what you can see around you?"
 
 # ---------------------------------------------------------------------------
 # Function definitions
 # ---------------------------------------------------------------------------
-# Each function maps to a method in backend/sar_service.py.
-# All SAR lookups are read-only and take no parameters — they report the
-# current state of the one active search.
+# Handled in backend via voice_agent/function_handlers.py.
+# See docs/FUNCTION_GUIDE.md for definition best practices.
 
 FUNCTIONS = [
     ThinkSettingsV1FunctionsItem(
-        name="get_search_status",
-        description="""Get an overall status summary of the active search: whether it is still in progress or the person has been found, how many drones are flying, and how long the search has been running.
-
-Call this when the operator asks a general question like "what's the status", "how's the search going", or "give me an update". This is a read-only lookup — call it immediately, no confirmation needed.""",
-        parameters={
-            "type": "object",
-            "properties": {},
-            "required": []
-        }
-    ),
-    ThinkSettingsV1FunctionsItem(
-        name="get_highest_probability_area",
-        description="""Get the area the search system currently judges most likely to contain the missing person — where the operator should focus next. Returns a spoken-friendly landmark description (and coordinates if needed).
-
-Call this when the operator asks "where should we search", "where's the best place to look", or "what's the highest probability area". Read-only — call it immediately, no confirmation needed. Prefer the landmark description over raw coordinates when you answer.""",
-        parameters={
-            "type": "object",
-            "properties": {},
-            "required": []
-        }
-    ),
-    ThinkSettingsV1FunctionsItem(
-        name="get_coverage",
-        description="""Get how much of the search area has been covered so far, as a percentage and an approximate area.
-
-Call this when the operator asks "how much have we covered", "how much ground have we searched", or similar. Read-only — call it immediately, no confirmation needed.""",
-        parameters={
-            "type": "object",
-            "properties": {},
-            "required": []
-        }
-    ),
-    ThinkSettingsV1FunctionsItem(
-        name="get_located_status",
-        description="""Check whether the missing person has been found yet. If found, returns where they are (a landmark description and the terrain they're in) and the system's confidence.
-
-Call this when the operator asks "did we find them", "have we located the subject", or "any sign of them". Read-only — call it immediately, no confirmation needed.""",
-        parameters={
-            "type": "object",
-            "properties": {},
-            "required": []
-        }
-    ),
-    ThinkSettingsV1FunctionsItem(
         name="end_call",
-        description="""End the phone call gracefully.
+        description="""End the call.
 
-Call this after:
-- The patient says goodbye
-- The conversation has naturally concluded
-- You've said your closing remarks
+Call this ONLY after the person has told you they can SEE THE SEARCH DRONE IN THE SKY.
 
-Say goodbye FIRST, then call this function. Do not generate text after calling it.""",
+Before calling: give one final reassurance — tell them to stay where they are, wave both arms at the drone, and that help has found them and is on the way. THEN call this function. Do not generate text after calling it.
+
+Do NOT call this for any other reason. Stay on the line no matter what until the person sees the drone.""",
         parameters={
             "type": "object",
             "properties": {
                 "reason": {
                     "type": "string",
                     "description": "Why the call is ending",
-                    "enum": ["appointment_booked", "customer_goodbye", "no_action_needed"]
+                    "enum": ["drone_sighted"]
                 }
             },
             "required": ["reason"]

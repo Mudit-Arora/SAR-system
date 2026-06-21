@@ -10,6 +10,11 @@
 .env
 .env.*
 !.env.example
+*.setup_state.json
+
+# --- Claude Code agent tooling (not part of the project) ---
+.agents/
+skills-lock.json
 
 # --- Gathered data (large; tracked by structure only, not contents) ---
 data/terrain/*
