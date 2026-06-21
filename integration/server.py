@@ -31,6 +31,7 @@ from integration.broadcast import _location_phrase, compose_broadcast
 from integration.dashboard_projection import DroneVector, ProjectionContext, project
 from integration.deepgram_tts import deepgram_api_key, synthesize
 from integration.map_render import base_hillshade, render_base_frame
+from integration.observability import init_sentry
 from integration.terrain_render import render_terrain_png
 
 # Languages we can voice with a Deepgram Aura model. English is mapped; other languages (e.g.
@@ -508,6 +509,12 @@ class LoopRunner:
         self.start()
         return self.health()
 
+
+# Initialize Sentry BEFORE building the runner. LoopRunner.__init__ runs the whole pre-computed
+# scenario (_build), and the stepper THREAD advances it later — so initializing here means a crash
+# in either is reported. With no SENTRY_DSN this is a no-op, so import stays effectively side-effect
+# free (apart from building the run) and the demo is unchanged.
+init_sentry("integration-server")
 
 # Module-level runner so `uvicorn integration.server:app` finds a ready `app`. The stepper thread
 # is started/stopped by the lifespan handler (not at import), so importing this module is side-effect

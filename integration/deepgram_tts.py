@@ -19,6 +19,7 @@ import pathlib
 from typing import Optional
 
 import httpx
+import sentry_sdk
 
 logger = logging.getLogger(__name__)
 
@@ -102,5 +103,8 @@ def synthesize(text: str, voice: str = _DEFAULT_VOICE, timeout: float = 15.0) ->
         response.raise_for_status()
         return response.content
     except Exception as exc:  # network error, bad key, Deepgram outage -> fall back, don't crash
+        # Behavior is unchanged (we still log + return None + fall back to browser TTS); we just
+        # also report to Sentry so this otherwise-swallowed failure is visible. No-op without a DSN.
+        sentry_sdk.capture_exception(exc)
         logger.warning("Deepgram TTS failed (%s); falling back to browser TTS", exc)
         return None

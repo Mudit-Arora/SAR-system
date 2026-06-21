@@ -31,7 +31,10 @@ from src.search.terrain import SyntheticTerrain, TerrainProvider
 from src.search.terrain_raster import RasterTerrain
 from src.demo.detector_sim import DetectorSimulator
 
+import sentry_sdk
+
 from integration.backends import DetectorBackend, SimulatorBackend, YoloBackend
+from integration.observability import init_sentry
 from integration.telemetry import VideoFrameSource, build_pose_feed
 
 # Same calibration as src/demo/run.py: the real geo footprints clear less than a hand-built
@@ -325,6 +328,11 @@ def main() -> None:
         One command to prove the integration loop end-to-end. With no args it runs the
         simulator backend (and should locate); --video/--weights selects the real detector.
     """
+    # Optional Sentry monitoring for the CLI path. No-op without SENTRY_DSN; when set, an
+    # uncaught crash here (e.g. YOLO OOM / bad weights / corrupt frame) is reported via
+    # sentry-sdk's default excepthook integration, tagged with the frame index set below.
+    init_sentry("loop-cli")
+
     parser = argparse.ArgumentParser(description="Run the SAR integration loop (detector -> geo -> brain).")
     parser.add_argument("--real-terrain", action="store_true", help="use the real DEM/WorldCover rasters if present")
     parser.add_argument("--video", default=None, help="footage for the real YOLO backend (omit -> simulator)")
@@ -351,6 +359,10 @@ def main() -> None:
     )
 
     while not loop.is_done:
+        # Tag the frame index so that if loop.step() raises (detector/geo/brain failure),
+        # the uncaught exception reported to Sentry carries WHICH frame failed. Cheap, and
+        # a no-op when Sentry isn't initialized.
+        sentry_sdk.set_tag("frame_index", loop.frame_index)
         ms, event = loop.step()
         if event is not None:
             print(
