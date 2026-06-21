@@ -1,0 +1,44 @@
+# flyctl launch added from .gitignore
+# Environment files
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python cache
+**/__pycache__
+**/*.py[cod]
+**/*$py.class
+
+# Virtual environment
+**/venv
+**/env
+# NOTE: the patterns above match "venv"/"env" but NOT ".venv" (the dot makes it a
+# different name), so exclude the dotted form explicitly — otherwise COPY . . bakes
+# the local (macOS) .venv into the Fly image.
+**/.venv
+
+# System files
+**/.DS_Store
+**/Thumbs.db
+
+# IDE / Editor files
+**/.vscode
+**/.idea
+**/*.swp
+**/*.swo
+
+# Setup wizard state
+**/.setup_state.json
+
+# Misc
+**/.cursorindexingignore
+**/.specstory
+**/dev_docs
+
+# React Scripts
+**/.eslintcache
+
+# flyctl launch added from venv/.gitignore
+# Created by venv; see https://docs.python.org/3/library/venv.html
+venv/**/*
+fly.toml
