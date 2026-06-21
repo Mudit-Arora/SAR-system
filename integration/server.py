@@ -553,12 +553,18 @@ def get_map_base(v: Optional[int] = None) -> Response:
 
     Why:
         The dashboard draws its live vector overlays ON TOP of this. The client passes the `frame`
-        it got from /state as `?v=`, so the image and the vectors are the same frame. Bytes are
-        cached per index, so this is cheap; the no-store header keeps the browser fetching fresh
-        frames (the `?v=` already busts the cache, but we're explicit).
+        it got from /state as `?v=`, so the image and the vectors are the same frame. Each frame's
+        image is deterministic and never changes (the run is seeded), so we serve it as immutable
+        and cacheable: the `?v=` makes every frame a distinct URL, and immutable caching lets the
+        dashboard preload + reuse a frame's bytes instead of re-fetching on each swap — which is
+        what makes the map animate smoothly instead of flashing between frames.
     """
     png = runner.base_png(v)
-    return Response(content=png, media_type="image/png", headers={"Cache-Control": "no-store"})
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
 
 
 @app.get("/located")

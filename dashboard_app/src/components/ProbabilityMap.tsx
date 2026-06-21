@@ -24,30 +24,36 @@ export default function ProbabilityMap({ state, live }: Props) {
 
   const guidanceD = state.guidancePath && state.guidancePath.length ? toPath(state.guidancePath) : ''
 
-  // Double-buffer the per-frame base image to kill the inter-frame flash. The base map is a
-  // server-rendered PNG fetched fresh each frame (?v=frame) and served with Cache-Control:
-  // no-store, so we CANNOT just swap one <img>'s src — the browser would re-download the same
-  // bytes and blank the element mid-swap. Instead we keep TWO stacked <img> buffers and always
-  // load the next frame into the HIDDEN one; once it has decoded (onLoad) we flip it to the
-  // front (opacity). The element that loaded is the one shown, so there's no re-fetch and no
-  // flash — just a brief crossfade between two fully-decoded frames.
+  // Smoothly advance the per-frame base image (a server-rendered PNG, one per frame: ?v=frame).
+  // We keep ONE persistent <img> and only move it to the next frame once that frame has fully
+  // downloaded AND decoded off-screen (new Image() + .decode()). Two things make this gapless:
+  //   1. The server serves each frame immutably (Cache-Control: max-age,immutable) — each ?v= is
+  //      a distinct, unchanging image — so the visible <img> reuses the just-preloaded, cached
+  //      bitmap instead of re-fetching (a re-fetch is what caused the flash).
+  //   2. We swap only after .decode() resolves, so we never reveal a half-decoded frame (which
+  //      showed up as a brief blurred strip).
   const targetSrc = `${API_BASE}/map_base.png?v=${state.frame ?? 0}`
-  const [bufs, setBufs] = useState<[string, string]>([targetSrc, targetSrc])
-  const [front, setFront] = useState(0)
+  const [shownSrc, setShownSrc] = useState(targetSrc)
 
   useEffect(() => {
-    if (bufs[front] === targetSrc) return // the visible buffer already shows the latest frame
-    const back = front === 0 ? 1 : 0
-    if (bufs[back] !== targetSrc) {
-      // Point the hidden buffer at the new frame; its onLoad promotes it to the front.
-      setBufs((b) => (back === 0 ? [targetSrc, b[1]] : [b[0], targetSrc]))
+    if (targetSrc === shownSrc) return
+    let cancelled = false
+    const reveal = () => {
+      if (!cancelled) setShownSrc(targetSrc)
     }
-  }, [targetSrc, front, bufs])
-
-  // Once a buffer finishes loading the current target frame, make it the visible one.
-  const promoteIfReady = (i: number) => {
-    if (i !== front && bufs[i] === targetSrc) setFront(i)
-  }
+    const img = new Image()
+    img.src = targetSrc
+    if (typeof img.decode === 'function') {
+      // Resolves once the bitmap is paint-ready; reject (e.g. src changed) -> reveal anyway.
+      img.decode().then(reveal).catch(reveal)
+    } else {
+      img.onload = reveal
+      img.onerror = reveal
+    }
+    return () => {
+      cancelled = true // a newer frame arrived before this one was ready -> drop this swap
+    }
+  }, [targetSrc, shownSrc])
 
   return (
     <div className="panel relative flex-1 overflow-hidden bg-base-950">
@@ -58,24 +64,15 @@ export default function ProbabilityMap({ state, live }: Props) {
       <div className="absolute inset-0 grid place-items-center">
         <div className="relative aspect-square h-full max-w-full">
           {/* The unified base image: terrain + posterior + sectors, rendered server-side per frame,
-              keyed to state.frame. A square image in a square box -> no stretch. Two stacked
-              buffers swap frame-to-frame (see the double-buffer note above). The swap is INSTANT
-              (no opacity transition): the incoming buffer is already fully decoded before we reveal
-              it, so flipping it on is gapless — and crucially avoids a crossfade, whose ~50/50
-              midpoint would let the dark panel show through (two half-opaque layers ≈ 75% opaque),
-              which reads as a soft flicker. Instant discrete frames look like the demo GIF. */}
-          {([0, 1] as const).map((i) => (
-            <img
-              key={i}
-              src={bufs[i]}
-              alt=""
-              draggable={false}
-              decoding="async"
-              onLoad={() => promoteIfReady(i)}
-              className="absolute inset-0 h-full w-full"
-              style={{ opacity: front === i ? 1 : 0 }}
-            />
-          ))}
+              keyed to state.frame. A square image in a square box -> no stretch. `shownSrc` only
+              advances to a frame that has fully downloaded + decoded (see the note above), so the
+              animation is gapless — no flash, no half-decoded blurred frame. */}
+          <img
+            src={shownSrc}
+            alt=""
+            draggable={false}
+            className="absolute inset-0 h-full w-full"
+          />
 
       {/* Vector overlays (trails + route + tether). */}
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">
