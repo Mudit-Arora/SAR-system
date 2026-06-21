@@ -217,3 +217,26 @@ runs the **showcase scenario** (`build_showcase_loop` — real DEM/WorldCover, N
   construction (no reprojection — the same reason the hillshade route was chosen over contextily,
   see C2 above). If the rasters are absent the endpoint 404s and the dashboard falls back to its
   procedural backdrop.
+
+### Drone-as-guide — lead the located subject home (built; feasibility showcase)
+
+"Act 2": once the subject is found, the drone GUIDES the (mobile) subject back to the operators
+instead of dispatching rangers. Built as: a terrain-aware route planner (`src/search/return_path.py`
+— Dijkstra over `1/accessibility`, routes around cliffs/water), a follow-within-sight simulation
+(`src/search/guide.py` — subject walks at terrain-scaled pace, drone leads at `min(subject_s+sight,
+L)`), a standalone animation (`src/demo/guide_home.py`), a combined multi-drone-search + guide-home
+animation (`src/demo/search_and_guide.py`), and a live dashboard phase (server runs guidance after
+locate; `ProbabilityMap` draws the route + operators + follower + tether; a "Guide Home" ribbon
+step). Honest limitations (it's a feasibility showcase):
+- **Subject-follows-beacon is simulated and idealized.** The subject tracks the drone perfectly
+  along a 1-D arc-length parameterization; real behavior (hesitation, straying, losing line of sight
+  under canopy/ridge) is out of scope. The per-tick `(drone, subject)` positions are the seam a
+  richer follower model would plug into.
+- **Within-sight is structural, not sensed.** `drone_s = min(subject_s + sight, L)` guarantees the
+  lead never exceeds the sight distance by construction; there is no actual visibility/occlusion check.
+- **Terrain-aware via `1/accessibility` (Euclidean cost), not Tobler.** Same seam as the prior's
+  cost-distance upgrade (`docs/prior_model.md`); good enough to avoid impassable ground and prefer
+  walkable routes, but not a calibrated hiking-time model.
+- **Home = LKP** (reused as the operators position); a separate configurable operator point is a
+  one-field future seam.
+- **Movement is modeled only in the guide-home phase** — the search still assumes a stationary subject.
