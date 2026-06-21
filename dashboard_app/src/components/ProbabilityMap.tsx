@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Navigation, Home, WifiOff } from 'lucide-react'
 import type { MapState } from '../types'
 import { API_BASE } from '../lib/api'
@@ -25,13 +25,29 @@ export default function ProbabilityMap({ state, live }: Props) {
   const guidanceD = state.guidancePath && state.guidancePath.length ? toPath(state.guidancePath) : ''
 
   // Double-buffer the per-frame base image to kill the inter-frame flash. The base map is a
-  // server-rendered PNG fetched fresh each frame (?v=frame); naively swapping the <img> src
-  // leaves a visible gap while the new PNG downloads + decodes. Instead we keep showing the
-  // current frame (`shownSrc`) and load the incoming frame in a hidden <img>; only when THAT
-  // finishes (onLoad) do we promote it. The visible swap is then to an already-decoded image,
-  // so the animation is smooth instead of a slideshow.
-  const baseSrc = `${API_BASE}/map_base.png?v=${state.frame ?? 0}`
-  const [shownSrc, setShownSrc] = useState(baseSrc)
+  // server-rendered PNG fetched fresh each frame (?v=frame) and served with Cache-Control:
+  // no-store, so we CANNOT just swap one <img>'s src — the browser would re-download the same
+  // bytes and blank the element mid-swap. Instead we keep TWO stacked <img> buffers and always
+  // load the next frame into the HIDDEN one; once it has decoded (onLoad) we flip it to the
+  // front (opacity). The element that loaded is the one shown, so there's no re-fetch and no
+  // flash — just a brief crossfade between two fully-decoded frames.
+  const targetSrc = `${API_BASE}/map_base.png?v=${state.frame ?? 0}`
+  const [bufs, setBufs] = useState<[string, string]>([targetSrc, targetSrc])
+  const [front, setFront] = useState(0)
+
+  useEffect(() => {
+    if (bufs[front] === targetSrc) return // the visible buffer already shows the latest frame
+    const back = front === 0 ? 1 : 0
+    if (bufs[back] !== targetSrc) {
+      // Point the hidden buffer at the new frame; its onLoad promotes it to the front.
+      setBufs((b) => (back === 0 ? [targetSrc, b[1]] : [b[0], targetSrc]))
+    }
+  }, [targetSrc, front, bufs])
+
+  // Once a buffer finishes loading the current target frame, make it the visible one.
+  const promoteIfReady = (i: number) => {
+    if (i !== front && bufs[i] === targetSrc) setFront(i)
+  }
 
   return (
     <div className="panel relative flex-1 overflow-hidden bg-base-950">
@@ -42,25 +58,21 @@ export default function ProbabilityMap({ state, live }: Props) {
       <div className="absolute inset-0 grid place-items-center">
         <div className="relative aspect-square h-full max-w-full">
           {/* The unified base image: terrain + posterior + sectors, rendered server-side per frame,
-              keyed to state.frame. A square image in a square box -> no stretch. `shownSrc` is the
-              last FULLY-LOADED frame, so the visible image never blanks mid-swap. */}
-          <img
-            src={shownSrc}
-            alt=""
-            draggable={false}
-            decoding="async"
-            className="absolute inset-0 h-full w-full"
-          />
-          {/* Hidden preloader for the incoming frame: promote it to visible only once decoded. */}
-          {baseSrc !== shownSrc && (
+              keyed to state.frame. A square image in a square box -> no stretch. Two stacked
+              buffers crossfade frame-to-frame (see the double-buffer note above) so the animation
+              is smooth instead of a flashing slideshow. */}
+          {([0, 1] as const).map((i) => (
             <img
-              src={baseSrc}
+              key={i}
+              src={bufs[i]}
               alt=""
-              aria-hidden
-              className="hidden"
-              onLoad={() => setShownSrc(baseSrc)}
+              draggable={false}
+              decoding="async"
+              onLoad={() => promoteIfReady(i)}
+              className="absolute inset-0 h-full w-full transition-opacity duration-150 ease-linear"
+              style={{ opacity: front === i ? 1 : 0 }}
             />
-          )}
+          ))}
 
       {/* Vector overlays (trails + route + tether). */}
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">

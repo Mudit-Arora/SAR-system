@@ -59,7 +59,9 @@ export default function App() {
               <ProbabilityMap state={state} live={live} />
             </div>
 
-            <div className="flex w-[320px] shrink-0 flex-col gap-3">
+            {/* Right rail widened (the map is a centered square now, so it freed up horizontal
+                space) — this enlarges the Live Video Feed without shrinking the map's square. */}
+            <div className="flex w-[420px] shrink-0 flex-col gap-3">
               <LiveVideoFeed telemetry={state.telemetry} />
               <DetectionsList detections={state.detections} />
             </div>
@@ -68,7 +70,7 @@ export default function App() {
           {/* Bottom row */}
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
             <ProbabilityTrend data={state.trend} now={state.confidenceToDeclare} />
-            <MapUpdateSummary lastUpdate={state.telemetry.feedTime} />
+            <MapUpdateSummary stats={state.stats} trend={state.trend} lastUpdate={state.telemetry.feedTime} />
             <VoiceComms commands={state.recentCommands} broadcast={state.subjectBroadcast} />
           </div>
 

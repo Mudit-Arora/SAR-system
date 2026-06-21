@@ -1,27 +1,42 @@
 import { ArrowUp, ArrowDown, Flame } from 'lucide-react'
+import type { MissionStats, ProbabilityPoint } from '../types'
 
-export default function MapUpdateSummary({ lastUpdate }: { lastUpdate: string }) {
+interface Props {
+  stats: MissionStats // detections + area covered, live from /state
+  trend: ProbabilityPoint[] // top-5% belief concentration over time (for the latest value + delta)
+  lastUpdate: string
+}
+
+export default function MapUpdateSummary({ stats, trend, lastUpdate }: Props) {
+  // Latest belief concentration and its change vs. the previous point, so the "high probability
+  // area" row reflects the real map instead of a hardcoded number.
+  const mass = trend.length ? trend[trend.length - 1].mass : 0
+  const prevMass = trend.length > 1 ? trend[trend.length - 2].mass : mass
+  const delta = mass - prevMass
+  const deltaStr =
+    delta > 0.5 ? ` (↑ ${delta.toFixed(0)}%)` : delta < -0.5 ? ` (↓ ${Math.abs(delta).toFixed(0)}%)` : ''
+
   const rows = [
     {
       icon: ArrowUp,
       color: 'text-accent-green',
       ring: 'bg-accent-green/15',
       title: 'Detection evidence added',
-      sub: '7 detections (capped & fused)',
+      sub: `${stats.detections} detection${stats.detections === 1 ? '' : 's'} (capped & fused)`,
     },
     {
       icon: ArrowDown,
       color: 'text-accent-blue',
       ring: 'bg-accent-blue/15',
       title: 'Searched areas (no detection)',
-      sub: '42.1 ha updated',
+      sub: `${stats.areaCoveredKm2.toFixed(2)} km² covered`,
     },
     {
       icon: Flame,
       color: 'text-accent-red',
       ring: 'bg-accent-red/15',
       title: 'High probability area',
-      sub: '0.18 km² (↑ 23%)',
+      sub: `${mass.toFixed(0)}% of belief${deltaStr}`,
     },
   ]
 
