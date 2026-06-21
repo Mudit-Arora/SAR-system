@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 
-from integration.dashboard_projection import ProjectionContext, project
+from integration.dashboard_projection import DroneVector, ProjectionContext, project
 from integration.loop import build_simulator_loop
 from integration.telemetry import build_pose_feed
 from src.common.grid import GridSpec
@@ -131,6 +131,32 @@ def test_detection_rows_match_ui_shape():
         }
         assert set(det["persistence"].keys()) == {"seen", "of"}
         assert set(det["pos"].keys()) == {"x", "y"}
+
+
+def test_multi_drone_vectors_are_normalized_with_frame():
+    """
+    Scenario: project with a fleet of drones and a frame index in the context.
+    Why it matters: the hybrid map draws each drone (and its trail) as a vector over the base
+    image, keyed to `frame`. Assert each drone carries id/color and normalized pos/path in [0,1],
+    and the frame index passes through (so the client can fetch the matching base image).
+    """
+    loop, _ = build_simulator_loop()
+    map_state = loop.brain.map_state()
+    grid = map_state.grid_spec
+    fleet = [
+        DroneVector(id=0, color="deepskyblue", pos=(10, 20), path=[(5, 5), (10, 20)]),
+        DroneVector(id=1, color="gold", pos=(40, 80), path=[(30, 70), (40, 80)]),
+    ]
+    ui = project(map_state, ProjectionContext(drones=fleet, frame=7))
+
+    assert ui["frame"] == 7
+    assert len(ui["drones"]) == 2
+    for d in ui["drones"]:
+        assert set(d.keys()) == {"id", "color", "pos", "path"}
+        assert 0.0 <= d["pos"]["x"] <= 1.0 and 0.0 <= d["pos"]["y"] <= 1.0
+        for pt in d["path"]:
+            assert 0.0 <= pt["x"] <= 1.0 and 0.0 <= pt["y"] <= 1.0
+    assert ui["drones"][0]["color"] == "deepskyblue"
 
 
 def test_guidance_fields_default_to_searching():

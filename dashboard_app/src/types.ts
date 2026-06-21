@@ -76,6 +76,11 @@ export interface MapState {
   trend: ProbabilityPoint[]
   recentCommands: OperatorCommand[]
   telemetry: { altM: number; spdMs: number; hdgDeg: number; feedTime: string }
+  // --- hybrid map: live fleet vectors drawn over the server-rendered base image ---
+  // Each drone's id, display color (matches its sector outline in the base image), current
+  // normalized position, and flown trail. `frame` keys /state to /map_base.png?v={frame}.
+  drones?: { id: number; color: string; pos: { x: number; y: number }; path: { x: number; y: number }[] }[]
+  frame?: number
   // --- guide-home overlay (additive; null/'searching' during the search phase) ---
   // The walkable route the drone leads the subject along, back to the operators.
   guidancePath?: { x: number; y: number }[] | null

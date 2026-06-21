@@ -48,6 +48,31 @@ _N_DETECTION_ROWS = 6
 _HEAT_SUPPRESS_CELLS = 8  # min separation between blob centers (non-max suppression)
 
 
+@dataclass(frozen=True)
+class DroneVector:
+    """
+    One drone's live vector state for the dashboard map (drawn ON TOP of the base image).
+
+    Args (fields):
+        id: The drone's id (0-based). Also indexes the color palette as a fallback.
+        color: The drone's display color (matplotlib name, e.g. "deepskyblue") — the SAME color
+            its assigned sector is outlined in within the server base image, so the vector drone
+            visually belongs to its sector.
+        pos: The drone's current (row, col) cell.
+        path: The drone's flown (row, col) cells so far (its trail).
+
+    Why:
+        The base image carries the belief + sectors; the drones move every frame and want to be
+        crisp/interactive, so they ride as vectors. Carrying the server-chosen color here keeps
+        the image's sector outlines and the vector drones in lockstep (one source of color).
+    """
+
+    id: int
+    color: str
+    pos: Cell
+    path: List[Cell]
+
+
 @dataclass
 class ProjectionContext:
     """
@@ -89,6 +114,9 @@ class ProjectionContext:
     subject_cell: Optional[Cell] = None
     home_cell: Optional[Cell] = None
     guidance_status: str = "searching"
+    # Multi-drone fleet (search phase) + the frame index that keys the base image to the vectors.
+    drones: Optional[List[DroneVector]] = None
+    frame: int = 0
 
 
 # --- small formatting / geometry helpers (pure) ---
@@ -379,6 +407,21 @@ def project(map_state: MapState, context: Optional[ProjectionContext] = None) ->
         [_cell_to_norm(c, grid) for c in ctx.guidance_path] if ctx.guidance_path else None
     )
 
+    # Multi-drone fleet, normalized to the base image's frame (id/color/pos/path).
+    drones = (
+        [
+            {
+                "id": d.id,
+                "color": d.color,
+                "pos": _cell_to_norm(d.pos, grid),
+                "path": [_cell_to_norm(c, grid) for c in d.path],
+            }
+            for d in ctx.drones
+        ]
+        if ctx.drones
+        else []
+    )
+
     return {
         "missionName": ctx.mission_name,
         "region": ctx.region,
@@ -402,6 +445,9 @@ def project(map_state: MapState, context: Optional[ProjectionContext] = None) ->
         "trend": [{"t": _fmt_hm(t), "mass": round(m)} for t, m in ctx.trend],
         "recentCommands": [],  # populated by the voice layer in Milestone 2
         "telemetry": _telemetry(map_state, ctx, cfg),
+        # --- hybrid map: the fleet vectors + the frame index that keys them to the base image ---
+        "drones": drones,
+        "frame": ctx.frame,
         # --- guide-home overlay (additive; null/"searching" during the search phase) ---
         "guidancePath": guidance_path,
         "subjectPos": _cell_to_norm(ctx.subject_cell, grid) if ctx.subject_cell else None,
