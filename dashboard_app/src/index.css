@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #070d18;
+  color: #e2e8f0;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin custom scrollbars to match the dark UI */
+*::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: #24395f;
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #335079;
+}
+
+@layer components {
+  .panel {
+    @apply rounded-xl border border-white/5 bg-base-850/80 shadow-panel;
+  }
+  .panel-header {
+    @apply text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400;
+  }
+}
