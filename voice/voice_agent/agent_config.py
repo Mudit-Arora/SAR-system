@@ -6,14 +6,12 @@ This configures Deepgram's Voice Agent API with:
   - Speech-to-text (Deepgram Flux)
   - LLM (configurable, defaults to gpt-4o-mini)
   - Text-to-speech (Deepgram Aura)
-  - System prompt (dental office receptionist)
-  - Function definitions (scheduling operations)
+  - System prompt (Search & Rescue operations-support dispatcher)
+  - Function definitions (read-only SAR status lookups)
 
 To customize the agent's behavior, modify the SYSTEM_PROMPT and FUNCTIONS below.
 To swap the LLM or voice, change LLM_MODEL / VOICE_MODEL in your .env file.
 """
-from datetime import date
-
 from config import VOICE_MODEL, LLM_MODEL
 from deepgram.agent.v1 import (
     AgentV1Settings,
@@ -34,15 +32,10 @@ from deepgram.types.speak_settings_v1provider import SpeakSettingsV1Provider_Dee
 # System prompt
 # ---------------------------------------------------------------------------
 # This prompt follows voice-specific best practices from docs/PROMPT_GUIDE.md.
-# Key rules: short turns, plain language, no markdown, confirm-then-act for
+# Key rules: short turns, plain language, no markdown, report-don't-guess for
 # function calls.
 
-_TODAY = date.today()
-_TODAY_STR = _TODAY.strftime("%A, %B %-d, %Y")  # e.g. "Monday, February 24, 2026"
-
-SYSTEM_PROMPT = f"""You are a friendly and professional receptionist at Bright Smile Dental, a family dental practice. You are answering an incoming phone call.
-
-TODAY'S DATE: {_TODAY_STR}
+SYSTEM_PROMPT = """You are the voice of a Search and Rescue operations support system. A field operator or incident commander is calling in by phone to ask about an active search for a missing person. You answer their questions using live data from the search system.
 
 VOICE FORMATTING RULES:
 You are a VOICE agent. Your responses are spoken aloud via text-to-speech.
@@ -50,169 +43,85 @@ You are a VOICE agent. Your responses are spoken aloud via text-to-speech.
 - NO markdown, emojis, brackets, or special formatting
 - Keep responses brief: 1-2 sentences per turn
 - Never announce function calls or say things like "let me check that for you" without actually doing it
-- Spell out numbers naturally (say "January third" not "1/3")
+- Spell out numbers naturally (say "forty percent" not "40%")
 
-YOUR RESPONSIBILITIES:
-1. Greet callers warmly and identify their needs
-2. Help with appointment scheduling:
-   - Check available time slots
-   - Book new appointments
-   - Look up existing appointments
-   - Cancel appointments (always confirm before canceling)
-3. Answer basic questions about the practice
-4. End calls gracefully
+YOUR ROLE:
+You report what the search system currently knows. You do NOT fly drones or change the search yourself — you read off the live status, like a calm emergency dispatcher reading a status board. Be factual and concise.
 
-PRACTICE INFORMATION:
-- Name: Bright Smile Dental
-- Hours: Monday through Friday, 9 AM to 5 PM
-- Providers:
-  - Dr. Sarah Chen (general dentistry, consultations)
-  - Dr. Michael Rivera (general dentistry, consultations)
-  - Lisa Thompson, Registered Dental Hygienist (cleanings)
-- Services: cleanings, checkups, consultations
-- Location: 123 Main Street
+WHAT YOU CAN ANSWER — each maps to a tool. ALWAYS call the matching tool and answer from its result. NEVER invent coordinates, percentages, or a "found" status.
+1. Overall search status (how it's going, how many drones, how long) — use get_search_status
+2. Where to focus next / the highest-probability area to search — use get_highest_probability_area
+3. How much ground has been covered so far — use get_coverage
+4. Whether the missing person has been found yet — use get_located_status
 
 FUNCTION CALL RULES:
-Functions are tools you can use to check schedules, book appointments, etc.
-Follow the confirm-then-act pattern:
-
-For check_available_slots:
-- Call this whenever a patient asks about availability
-- You can call this proactively to offer options
-- If no date is specified, omit the date parameter to see all upcoming availability — do NOT call once per day
-- No confirmation needed — it's a read-only lookup
-- The results include slot_id values needed for booking
-
-For book_appointment:
-- You MUST have a slot_id from check_available_slots — never guess or use a date as the slot_id
-- FIRST confirm the details with the patient: "I have a cleaning with Lisa Thompson on Monday January 6th at 10 AM. Shall I book that for you?"
-- WAIT for the patient to confirm
-- THEN call book_appointment with the slot_id from check_available_slots
-- You'll need their name and phone number if not already provided
-
-For check_appointment:
-- Call this when a patient asks about their existing appointment
-- No confirmation needed — it's a read-only lookup
-
-For cancel_appointment:
-- FIRST confirm: "I can cancel your appointment on [date] with [provider]. Are you sure?"
-- WAIT for the patient to confirm
-- THEN call cancel_appointment
+- These are all read-only lookups. Call the matching tool whenever the operator asks; no confirmation needed.
+- After a tool returns, relay the key fact in one or two spoken sentences.
+- When reporting a location, prefer the landmark description the tool gives you (for example, "near the Pantoll trailhead") over raw latitude and longitude numbers. Only read coordinates aloud if the operator explicitly asks for them.
+- If the operator asks something these tools don't cover, say you can report the search status, the priority search area, how much has been covered, and whether the subject has been located.
 
 For end_call:
 - Call this after the conversation is naturally wrapping up
 - Say goodbye first, then call the function
 
 CONVERSATION STYLE:
-- Be warm but efficient — dental office receptionists are friendly and organized
-- Ask one question at a time
-- If a patient is vague ("I need to come in"), ask what they need (cleaning, checkup, consultation)
-- If no slots are available for their preferred time, offer alternatives
-- Always confirm details before booking
+- Calm, clear, and efficient, like an emergency dispatcher
+- Give one piece of information at a time
+- If the operator is vague, ask whether they want search status, the priority area, coverage, or whether the person has been found
 """
 
-GREETING = "Thank you for calling Bright Smile Dental! How can I help you today?"
+GREETING = "S A R command, go ahead."
 
 # ---------------------------------------------------------------------------
 # Function definitions
 # ---------------------------------------------------------------------------
-# Each function maps to a method in backend/scheduling_service.py.
-# See docs/FUNCTION_GUIDE.md for definition best practices.
+# Each function maps to a method in backend/sar_service.py.
+# All SAR lookups are read-only and take no parameters — they report the
+# current state of the one active search.
 
 FUNCTIONS = [
     ThinkSettingsV1FunctionsItem(
-        name="check_available_slots",
-        description="""Check available appointment slots. Call this when a patient asks about availability.
+        name="get_search_status",
+        description="""Get an overall status summary of the active search: whether it is still in progress or the person has been found, how many drones are flying, and how long the search has been running.
 
-You can optionally filter by date and/or provider. If the patient doesn't specify, omit both parameters to get a general overview of upcoming availability — do NOT call this once per day.
-
-IMPORTANT: You must call this function before booking. The results include slot_id values that are required for book_appointment.
-
-This is a read-only lookup — no confirmation needed before calling.""",
+Call this when the operator asks a general question like "what's the status", "how's the search going", or "give me an update". This is a read-only lookup — call it immediately, no confirmation needed.""",
         parameters={
             "type": "object",
-            "properties": {
-                "date": {
-                    "type": "string",
-                    "description": "Date to check in YYYY-MM-DD format. If the patient says 'Monday' or 'next week', convert to a specific date."
-                },
-                "provider": {
-                    "type": "string",
-                    "description": "Provider name to filter by (e.g., 'Dr. Chen', 'Lisa Thompson'). Omit to see all providers."
-                }
-            },
+            "properties": {},
             "required": []
         }
     ),
     ThinkSettingsV1FunctionsItem(
-        name="book_appointment",
-        description="""Book an appointment for a patient.
+        name="get_highest_probability_area",
+        description="""Get the area the search system currently judges most likely to contain the missing person — where the operator should focus next. Returns a spoken-friendly landmark description (and coordinates if needed).
 
-IMPORTANT: Before calling this function, you MUST:
-1. Call check_available_slots to get available slots with their slot_id values
-2. Confirm the appointment details with the patient (date, time, provider, service type)
-3. Collect the patient's name and phone number
-4. WAIT for the patient to say "yes" or confirm
-
-Only call this after the patient has explicitly agreed to the booking. The slot_id must come from a check_available_slots result.""",
+Call this when the operator asks "where should we search", "where's the best place to look", or "what's the highest probability area". Read-only — call it immediately, no confirmation needed. Prefer the landmark description over raw coordinates when you answer.""",
         parameters={
             "type": "object",
-            "properties": {
-                "patient_name": {
-                    "type": "string",
-                    "description": "Full name of the patient"
-                },
-                "patient_phone": {
-                    "type": "string",
-                    "description": "Patient phone number"
-                },
-                "slot_id": {
-                    "type": "string",
-                    "description": "The slot_id value from check_available_slots results (e.g. 'slot-a1b2c3d4'). You MUST call check_available_slots first and use the exact slot_id from the results. Do NOT use a date string."
-                }
-            },
-            "required": ["patient_name", "patient_phone", "slot_id"]
-        }
-    ),
-    ThinkSettingsV1FunctionsItem(
-        name="check_appointment",
-        description="""Look up a patient's existing appointment. Call this when a patient asks about an appointment they already have.
-
-Provide either the patient's name or phone number (or both). This is a read-only lookup — no confirmation needed.""",
-        parameters={
-            "type": "object",
-            "properties": {
-                "patient_name": {
-                    "type": "string",
-                    "description": "Patient name to search for"
-                },
-                "patient_phone": {
-                    "type": "string",
-                    "description": "Patient phone number to search for"
-                }
-            },
+            "properties": {},
             "required": []
         }
     ),
     ThinkSettingsV1FunctionsItem(
-        name="cancel_appointment",
-        description="""Cancel an existing appointment.
+        name="get_coverage",
+        description="""Get how much of the search area has been covered so far, as a percentage and an approximate area.
 
-IMPORTANT: Before calling this function, you MUST:
-1. Look up the appointment first using check_appointment
-2. Confirm with the patient: "I can cancel your [service] appointment on [date] at [time] with [provider]. Are you sure?"
-3. WAIT for the patient to confirm
-
-Only call this after the patient has explicitly confirmed they want to cancel.""",
+Call this when the operator asks "how much have we covered", "how much ground have we searched", or similar. Read-only — call it immediately, no confirmation needed.""",
         parameters={
             "type": "object",
-            "properties": {
-                "appointment_id": {
-                    "type": "string",
-                    "description": "The appointment ID from check_appointment results"
-                }
-            },
-            "required": ["appointment_id"]
+            "properties": {},
+            "required": []
+        }
+    ),
+    ThinkSettingsV1FunctionsItem(
+        name="get_located_status",
+        description="""Check whether the missing person has been found yet. If found, returns where they are (a landmark description and the terrain they're in) and the system's confidence.
+
+Call this when the operator asks "did we find them", "have we located the subject", or "any sign of them". Read-only — call it immediately, no confirmation needed.""",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": []
         }
     ),
     ThinkSettingsV1FunctionsItem(

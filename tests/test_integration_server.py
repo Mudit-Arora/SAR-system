@@ -182,3 +182,65 @@ def test_map_base_changes_during_search(monkeypatch):
         later = client.get(f"/map_base.png?v={mid}").content
         assert early[:8] == b"\x89PNG\r\n\x1a\n" and later[:8] == b"\x89PNG\r\n\x1a\n"
         assert early != later, "base image did not change between search frames"
+
+
+# Keys /ops must always carry — the contract the operator agent's sar_service reads
+# (and the offline snapshot mirrors).
+_OPS_KEYS = {
+    "status", "located", "n_drones", "elapsed", "coverage_pct", "coverage_km2",
+    "confidence_pct", "highest_prob", "located_info",
+}
+
+
+def test_ops_shape_while_searching():
+    """
+    Scenario: hit /ops on a freshly-started server (frame 0, still searching).
+    Why it matters: the operator voice agent reads /ops for spoken status; before the locate it
+    must report searching, no located_info, the 3-drone fleet, and a highest-probability area
+    described by a landmark (so the agent never reads raw coordinates aloud).
+    """
+    from fastapi.testclient import TestClient
+    import integration.server as server
+
+    with TestClient(server.app) as client:
+        ops = client.get("/ops").json()
+        assert _OPS_KEYS.issubset(ops.keys())
+        assert ops["status"] == "searching"
+        assert ops["located"] is False
+        assert ops["located_info"] is None
+        assert ops["n_drones"] == 3
+        assert 0.0 <= ops["coverage_pct"] <= 100.0
+        assert "Pantoll" in ops["highest_prob"]["description"]
+
+
+def test_ops_reflects_located(monkeypatch):
+    """
+    Scenario: run flat-out to the locate, then read /ops.
+    Why it matters: once the brain declares located, /ops must flip to located with a speakable
+    located_info (terrain phrase + landmark + lat/lon) and full confidence — the facts the agent
+    speaks when the operator asks 'did we find them?'.
+    """
+    import integration.server as server
+
+    monkeypatch.setattr(server, "_STEP_INTERVAL_S", 0.0)
+    from fastapi.testclient import TestClient
+
+    with TestClient(server.app) as client:
+        client.post("/reset")
+
+        deadline = time.time() + 25.0
+        h = client.get("/health").json()
+        while not h["located"] and time.time() < deadline:
+            time.sleep(0.05)
+            h = client.get("/health").json()
+        assert h["located"]
+
+        ops = client.get("/ops").json()
+        assert ops["status"] == "located"
+        assert ops["located"] is True
+        info = ops["located_info"]
+        assert info is not None
+        assert info["terrain"] == "in the trees"  # the subject is in tree cover
+        assert "Pantoll" in info["description"]
+        assert len(info["latlon"]) == 2
+        assert ops["confidence_pct"] == 100

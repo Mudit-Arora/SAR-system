@@ -1,13 +1,13 @@
 """
-Function dispatch - routes agent function calls to the backend scheduling service.
+Function dispatch - routes agent function calls to the backend SAR service.
 
 Each function the agent can call (defined in agent_config.py) maps to a method
-on the scheduling service.  This module is the bridge between the voice agent
-layer and the backend layer.
+on the SAR service.  This module is the bridge between the voice agent layer
+and the backend layer.
 
-To swap the mock backend for a real API, you only need to change the imports
-and method calls here - the voice agent layer doesn't know or care whether
-the backend is in-memory or a remote HTTP service.
+The SAR service reads live state from the integration server's /ops endpoint
+(or a built-in snapshot when that's unreachable), so the voice agent layer
+doesn't know or care where the search state comes from.
 """
 import logging
 
@@ -26,31 +26,19 @@ async def dispatch_function(name: str, args: dict) -> dict:
     """
     # Lazy import - keeps the backend dependency explicit and avoids
     # circular imports during startup.
-    from backend.scheduling_service import scheduling_service
+    from backend.sar_service import sar_service
 
-    if name == "check_available_slots":
-        return await scheduling_service.get_available_slots(
-            date=args.get("date"),
-            provider=args.get("provider"),
-        )
+    if name == "get_search_status":
+        return await sar_service.get_search_status()
 
-    elif name == "book_appointment":
-        return await scheduling_service.book_appointment(
-            patient_name=args["patient_name"],
-            patient_phone=args["patient_phone"],
-            slot_id=args["slot_id"],
-        )
+    elif name == "get_highest_probability_area":
+        return await sar_service.get_highest_probability_area()
 
-    elif name == "check_appointment":
-        return await scheduling_service.check_appointment(
-            patient_name=args.get("patient_name"),
-            patient_phone=args.get("patient_phone"),
-        )
+    elif name == "get_coverage":
+        return await sar_service.get_coverage()
 
-    elif name == "cancel_appointment":
-        return await scheduling_service.cancel_appointment(
-            appointment_id=args["appointment_id"],
-        )
+    elif name == "get_located_status":
+        return await sar_service.get_located_status()
 
     elif name == "end_call":
         reason = args.get("reason", "customer_goodbye")

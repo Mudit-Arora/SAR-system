@@ -38,6 +38,7 @@ from deepgram.agent.v1 import (
 from deepgram.agent.v1.socket_client import V1SocketClientResponse
 
 from voice_agent.agent_config import get_agent_config
+from transcript_hub import transcript_hub
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,8 @@ class VoiceAgentSession:
         try:
             await asyncio.wait_for(self._settings_applied.wait(), timeout=5.0)
             logger.info(f"[SESSION:{self.call_sid}] Settings applied - ready for audio")
+            # The call is live: tell the dashboard to start a fresh transcript.
+            transcript_hub.publish_call_started()
         except asyncio.TimeoutError:
             logger.error(f"[SESSION:{self.call_sid}] Timeout waiting for settings to be applied")
             raise
@@ -129,6 +132,9 @@ class VoiceAgentSession:
         self._cleanup_done = True
 
         logger.info(f"[SESSION:{self.call_sid}] Cleaning up")
+        # The call is over: tell the dashboard to mark the transcript inactive.
+        # (_cleanup_done above guarantees this fires exactly once per call.)
+        transcript_hub.publish_call_ended()
 
         # Cancel tasks
         for task in [self._audio_task, self._listen_task]:
@@ -202,9 +208,11 @@ class VoiceAgentSession:
             elif isinstance(message, AgentV1FunctionCallRequest):
                 await self._handle_function_call(message)
 
-            # Transcript text → log it
+            # Transcript text → log it AND publish it to the dashboard.
             elif isinstance(message, AgentV1ConversationText):
                 logger.info(f"[SESSION:{self.call_sid}] {message.role.upper()}: {message.content}")
+                # publish_turn maps Deepgram's "agent" role to the dashboard's "assistant".
+                transcript_hub.publish_turn(message.role, message.content)
 
             # User started speaking → tell Twilio to stop playing agent audio
             elif isinstance(message, AgentV1UserStartedSpeaking):

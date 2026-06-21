@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.common.contracts import CameraPose, Cell, LocatedEvent, Status
 from src.demo.search_demo import _DRONE_COLORS
 from src.demo.search_and_guide import _guiding_drone_id, run_combined
-from integration.broadcast import compose_broadcast
+from integration.broadcast import _location_phrase, compose_broadcast
 from integration.dashboard_projection import DroneVector, ProjectionContext, project
 from integration.deepgram_tts import deepgram_api_key, synthesize
 from integration.map_render import base_hillshade, render_base_frame
@@ -43,6 +43,13 @@ _STEP_INTERVAL_S = float(os.environ.get("SAR_STEP_INTERVAL", "0.7"))
 
 # Fleet size for the dashboard scenario (the 3-drone coordination showcase).
 _N_DRONES = 3
+
+# Human landmark anchoring the AOI, for spoken answers from the operator voice agent.
+# The demo region is fixed (Marin / Mt. Tamalpais) and the search is seeded at the
+# last-known position at the Pantoll trailhead, so naming it is truthful for this build.
+# It lets /ops report locations as a landmark ("near the Pantoll trailhead") instead of
+# raw coordinates the agent would otherwise read aloud.
+_AOI_LANDMARK = "the Pantoll trailhead"
 
 # The guidance sim emits hundreds of fine ticks; replay this many so the guide-home phase
 # plays out in a watchable time (a display cadence, not a sim change).
@@ -356,6 +363,68 @@ class LoopRunner:
         with self._lock:
             return self._located
 
+    def ops(self) -> Dict[str, Any]:
+        """
+        Voice-friendly SAR facts for the operator telephony agent.
+
+        Returns:
+            A dict the agent's sar_service reads over HTTP: {status, located,
+            n_drones, elapsed, coverage_pct, coverage_km2, confidence_pct,
+            highest_prob{latlon, landmark, description},
+            located_info{latlon, terrain, landmark, description} | None}.
+
+        Why:
+            A small, speakable projection of the current frame's state — cleaner
+            for the agent than parsing the rich UI /state. Read-only: it derives
+            from the same single-writer state, surfacing locations as a landmark
+            so the agent never reads raw coordinates aloud. Frames are immutable
+            after build, so only the live index/state/located read needs the lock.
+        """
+        with self._lock:
+            state = self._state_dict
+            located = self._located
+            idx = self._i
+
+        # Coverage as a percentage of the whole AOI (the UI exposes only km2).
+        cov_km2 = float(state.get("stats", {}).get("areaCoveredKm2", 0.0))
+        total_km2 = self._grid.n_rows * self._grid.n_cols * (self._grid.cell_size_m ** 2) / 1e6
+        cov_pct = round(100.0 * cov_km2 / total_km2, 1) if total_km2 else 0.0
+
+        # Highest-probability cell of the current frame (clamp into the search
+        # frames; during the guide-home phase this reports the located area).
+        frame = self._search_frames[min(idx, self._n_search - 1)]
+        top_cells = frame.map_state.top_cells
+        hp_latlon = None
+        if top_cells:
+            lat, lon = self._grid.cell_to_latlon(*top_cells[0][0])
+            hp_latlon = [round(lat, 6), round(lon, 6)]
+
+        is_located = located is not None
+        located_info = None
+        if is_located:
+            located_info = {
+                "latlon": [round(c, 6) for c in located["latlon"]],
+                "terrain": _location_phrase(located["terrain_context"], "en"),
+                "landmark": _AOI_LANDMARK,
+                "description": f"near {_AOI_LANDMARK}",
+            }
+
+        return {
+            "status": "located" if is_located else "searching",
+            "located": is_located,
+            "n_drones": _N_DRONES,
+            "elapsed": state.get("stats", {}).get("searchTime", "00:00"),
+            "coverage_pct": cov_pct,
+            "coverage_km2": round(cov_km2, 2),
+            "confidence_pct": state.get("confidenceToDeclare", 0),
+            "highest_prob": {
+                "latlon": hp_latlon,
+                "landmark": _AOI_LANDMARK,
+                "description": f"near {_AOI_LANDMARK}",
+            },
+            "located_info": located_info,
+        }
+
     def terrain_png(self) -> Optional[bytes]:
         """The cached colorized terrain PNG (superseded by the base image; kept for /terrain.png)."""
         return self._terrain_png
@@ -497,6 +566,12 @@ def get_located() -> Dict[str, Any]:
     """The LocatedEvent once declared, else {"located": false}. Why: the broadcast/notify surface."""
     event = runner.located()
     return event if event is not None else {"located": False}
+
+
+@app.get("/ops")
+def get_ops() -> Dict[str, Any]:
+    """Voice-friendly SAR facts for the operator telephony agent. Why: the agent's sar_service reads this."""
+    return runner.ops()
 
 
 @app.get("/terrain.png")
