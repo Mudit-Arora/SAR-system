@@ -309,27 +309,34 @@ def _caption(fs: "FrameState") -> str:
     return "OVERFLIGHT — loitering over the high-probability slope"
 
 
-def draw_belief_layer(ax, posterior: np.ndarray, hill: np.ndarray) -> None:
+def draw_belief_layer(ax, posterior: np.ndarray, hill: np.ndarray, extent=None) -> None:
     """
     Draw the grey hillshade backdrop with the posterior overlaid (graded alpha) onto an axis.
 
     Args:
         ax: The matplotlib axis (already cleared by the caller).
         posterior: (n_rows, n_cols) probability map to overlay.
-        hill: (n_rows, n_cols) hillshade backdrop in [0, 1].
+        hill: hillshade backdrop in [0, 1]. Same shape as posterior by default, OR a FINER
+            array (e.g. 4x) when `extent` is given — for a sharper terrain backdrop.
+        extent: Optional (xmin, xmax, ymin, ymax) data extent applied to BOTH imshow calls, so a
+            higher-resolution hillshade and the native-resolution posterior register over the
+            same area. None -> matplotlib's default per-array extent (the demo path; hill and
+            posterior must then share a shape).
 
     Why:
         The hillshade + log-scaled, steeply-graded-alpha posterior is the shared visual base for
-        BOTH the scripted showcase and the C1 closed-loop planner demo, so it lives in one place
-        (DRY). Graded alpha (power 2.5) keeps the cold tail see-through (terrain shows) and the
-        hot find opaque (it pops) — a flat alpha washes this grid's broad tail.
+        the showcase, the C1 planner demo, AND the live dashboard (DRY). Graded alpha (power 2.5)
+        keeps the cold tail see-through (terrain shows) and the hot find opaque. The optional
+        `extent` lets the dashboard pass a finer hillshade (crisper terrain) without moving the
+        posterior off the grid — both are pinned to the same extent.
     """
-    ax.imshow(hill, origin="lower", cmap="gray", vmin=0.0, vmax=1.0)
+    ax.imshow(hill, origin="lower", cmap="gray", vmin=0.0, vmax=1.0, extent=extent)
     floor = posterior[posterior > 0].min() if np.any(posterior > 0) else 1e-12
     norm = LogNorm(vmin=floor, vmax=posterior.max())
     normed = np.asarray(norm(np.maximum(posterior, floor)))      # in [0, 1]
     alpha = 0.06 + 0.90 * np.clip(normed, 0.0, 1.0) ** 2.5       # see-through cold, opaque hot
-    ax.imshow(np.maximum(posterior, floor), origin="lower", cmap="inferno", norm=norm, alpha=alpha)
+    ax.imshow(np.maximum(posterior, floor), origin="lower", cmap="inferno", norm=norm,
+              alpha=alpha, extent=extent)
 
 
 def render_frame(ax, cfg: BrainConfig, grid: GridSpec, subject: Tuple[int, int],

@@ -32,10 +32,15 @@ from src.common.grid import GridSpec
 from src.demo.search_demo import _draw_sectors
 from src.demo.showcase import draw_belief_layer, hillshade
 
-# Square output edge in pixels. The 160x160 grid is square, so a square image fills the data
-# area with no letterboxing; the browser then object-fill-stretches it to the panel.
-_SIZE_PX = 1000
+# Square output edge in pixels — large enough that it's DOWNSCALING into the dashboard panel
+# even on a high-DPI (Retina, 2x) display, so the base image reads crisp, not upscaled.
+_SIZE_PX = 1800
 _DPI = 100
+
+# The hillshade is sampled this many times finer than the brain grid. The brain grid is 50 m
+# cells (160x160); the DEM is ~10 m native, so ~4x (12.5 m) recovers most of the real terrain
+# detail the coarse grid throws away — the single biggest lever against "blurry terrain".
+_TERRAIN_FINE_FACTOR = 4
 
 
 def render_base_frame(
@@ -77,7 +82,10 @@ def render_base_frame(
     ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
     ax.set_axis_off()
 
-    draw_belief_layer(ax, posterior, hill)  # gray hillshade + graded-alpha posterior (origin='lower')
+    # The hillshade may be FINER than the posterior (sharper terrain); pin both to the brain
+    # grid's cell-edge extent so they register and the cell-center vector frame still holds.
+    extent = (-0.5, grid.n_cols - 0.5, -0.5, grid.n_rows - 0.5) if hill.shape != posterior.shape else None
+    draw_belief_layer(ax, posterior, hill, extent=extent)  # gray hillshade + graded-alpha posterior
     if planner is not None and len(ranked_sectors):
         _draw_sectors(ax, planner, list(ranked_sectors), list(drones))
 
@@ -94,19 +102,30 @@ def render_base_frame(
     return buffer.getvalue()
 
 
-def base_hillshade(grid: GridSpec) -> np.ndarray:
+def base_hillshade(grid: GridSpec, fine_factor: int = _TERRAIN_FINE_FACTOR) -> np.ndarray:
     """
-    The hillshade for the grid (thin pass-through to the demo's hillshade, for the server to cache).
+    A FINER hillshade for the dashboard base — sampled at fine_factor x the brain grid.
 
     Args:
-        grid: The shared GridSpec.
+        grid: The shared (brain) GridSpec.
+        fine_factor: How many times finer than the brain grid to sample the DEM (4 -> 12.5 m
+            cells from a 50 m grid, near the DEM's ~10 m native resolution).
 
     Returns:
-        (n_rows, n_cols) shaded relief in [0, 1].
+        (n_rows*fine_factor, n_cols*fine_factor) shaded relief in [0, 1], over the SAME
+        geographic extent as `grid`.
 
     Why:
-        The hillshade never changes within a run, so the server computes it ONCE and passes it to
-        every render_base_frame call. Exposing it here keeps map_render the single import surface
-        for the base map (the server doesn't reach into the demo modules directly).
+        The brain grid (50 m) is too coarse to render crisp terrain; the DEM is ~10 m. Sampling
+        the hillshade on a finer grid (same origin/extent) recovers the real ridges/valleys, and
+        render_base_frame overlays it under the native-resolution posterior via a shared extent.
+        Computed ONCE per run by the server and reused for every frame.
     """
-    return hillshade(grid)
+    fine_grid = GridSpec(
+        crs=grid.crs,
+        origin=grid.origin,
+        cell_size_m=grid.cell_size_m / fine_factor,
+        n_rows=grid.n_rows * fine_factor,
+        n_cols=grid.n_cols * fine_factor,
+    )
+    return hillshade(fine_grid)

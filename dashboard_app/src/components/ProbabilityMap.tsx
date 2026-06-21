@@ -22,20 +22,22 @@ export default function ProbabilityMap({ state }: Props) {
   const guidanceD = state.guidancePath && state.guidancePath.length ? toPath(state.guidancePath) : ''
 
   return (
-    <div className="panel relative flex-1 overflow-hidden">
-      {/* Dark fallback while the base image loads (or if the server is offline). */}
-      <div className="absolute inset-0 bg-base-950" />
-
-      {/* The unified base image: terrain + posterior + sectors, rendered server-side per frame.
-          Keyed to state.frame so it stays in lockstep with the vector overlays below. object-fill
-          stretches the square base to the panel; the vectors use the same % frame, so they align. */}
-      <img
-        src={`${API_BASE}/map_base.png?v=${state.frame ?? 0}`}
-        alt=""
-        draggable={false}
-        decoding="async"
-        className="absolute inset-0 h-full w-full object-fill"
-      />
+    <div className="panel relative flex-1 overflow-hidden bg-base-950">
+      {/* The map content is a centered SQUARE (matching the demo + the square base image), so the
+          square base is never stretched into the panel's rectangle (no distortion, sharper). The
+          vectors use % of THIS square, so they stay pixel-aligned to the base; the panel-corner
+          chrome (compass/legend/...) sits outside the square. */}
+      <div className="absolute inset-0 grid place-items-center">
+        <div className="relative aspect-square h-full max-w-full">
+          {/* The unified base image: terrain + posterior + sectors, rendered server-side per frame,
+              keyed to state.frame. A square image in a square box -> no stretch. */}
+          <img
+            src={`${API_BASE}/map_base.png?v=${state.frame ?? 0}`}
+            alt=""
+            draggable={false}
+            decoding="async"
+            className="absolute inset-0 h-full w-full"
+          />
 
       {/* Vector overlays (trails + route + tether). */}
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">
@@ -125,6 +127,8 @@ export default function ProbabilityMap({ state }: Props) {
             </div>
           </div>
         )}
+      </div>
+        </div>
       </div>
 
       {/* Compass */}
