@@ -1,52 +1,51 @@
 # =============================================================================
 # integration/server.py
 # -----------------------------------------------------------------------------
-# Responsible for: Serving the live, projected UI-MapState to the React dashboard over
-#                  HTTP, by stepping the integration loop on a background thread and
-#                  publishing the latest projected snapshot.
-# Role in project: The transport seam (interfaces §6.2's "cross a socket boundary later").
-#                  The brain stays the single writer — exactly ONE thread steps the loop;
-#                  HTTP handlers only READ the cached snapshot under a lock. This is the
-#                  in-process MapState becoming a JSON endpoint without any contract change.
-# Pattern: A background stepper thread (the single writer) + lock-guarded read model (the
-#          published snapshot). Polling, not push — the dashboard GETs /state on a timer.
-#          FastAPI is chosen over Flask because Milestone 2's voice layer wants WS/streaming,
-#          which FastAPI gives for free behind this same app.
-# Run: .venv/bin/uvicorn integration.server:app --reload
-#      (env: SAR_STEP_INTERVAL = seconds per frame, default 0.7 — tune the demo cadence)
+# Responsible for: Serving the live HYBRID dashboard map + panels over HTTP. The server
+#                  pre-computes the 3-drone search + guide-home run, renders the unified BASE
+#                  image per frame (terrain + posterior + sectors), and publishes the per-frame
+#                  vector + panel state. The browser composites: base image (GET /map_base.png)
+#                  under live vector overlays (GET /state).
+# Role in project: The transport seam. One stepper thread advances the frame index (the single
+#                  writer); HTTP handlers only READ cached state/bytes under locks. The base
+#                  image and the vectors are keyed to the same `frame` index so they never drift.
+# Run: .venv/bin/uvicorn integration.server:app
+#      (env: SAR_STEP_INTERVAL = seconds per frame, default 0.7)
 # =============================================================================
 
 from __future__ import annotations
 
+import math
 import os
 import threading
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.common.contracts import Cell, LocatedEvent
-from src.search.guide import simulate_guidance
-from src.search.return_path import plan_return_path
-from integration.dashboard_projection import ProjectionContext, project
-from integration.loop import build_showcase_loop
+from src.common.contracts import CameraPose, Cell, LocatedEvent, Status
+from src.demo.search_demo import _DRONE_COLORS
+from src.demo.search_and_guide import _guiding_drone_id, run_combined
+from integration.dashboard_projection import DroneVector, ProjectionContext, project
+from integration.map_render import base_hillshade, render_base_frame
 from integration.terrain_render import render_terrain_png
 
-# Seconds between frames. Slow enough to WATCH the map evolve in the demo, fast enough that
-# the ~46-frame run locates in well under a minute. A tunable, not a constant in the math.
+# Seconds between frames — the demo cadence. A display tunable, not part of the math.
 _STEP_INTERVAL_S = float(os.environ.get("SAR_STEP_INTERVAL", "0.7"))
 
-# The guidance sim emits hundreds of fine ticks; we replay this many on the dashboard so the
-# guide-home phase plays out in a watchable time (a display cadence, not a sim change).
+# Fleet size for the dashboard scenario (the 3-drone coordination showcase).
+_N_DRONES = 3
+
+# The guidance sim emits hundreds of fine ticks; replay this many so the guide-home phase
+# plays out in a watchable time (a display cadence, not a sim change).
 _GUIDE_FRAMES = 36
 
-# Allowed browser origins (the Vite dev server). CORS is required because the dashboard is
-# served from :5173 while this API is on :8000 — a cross-origin fetch the browser blocks by default.
-_CORS_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+# Seconds of sim time per frame, for the trend chart's x-axis (a monotonic display clock).
+_FRAME_DT_S = 9.0
+
+# Allowed browser origins (the Vite dev server) — CORS for the cross-origin :5173 -> :8000 fetch.
+_CORS_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
 def _located_to_dict(event: LocatedEvent) -> Dict[str, Any]:
@@ -57,11 +56,11 @@ def _located_to_dict(event: LocatedEvent) -> Dict[str, Any]:
         event: The brain's LocatedEvent.
 
     Returns:
-        A JSON-serializable dict (cell/latlon as lists; terrain_context already plain).
+        A JSON-serializable dict (tuples flattened to lists).
 
     Why:
-        LocatedEvent is a dataclass with tuple fields; the broadcast/voice surfaces consume
-        it over HTTP, so we flatten the tuples here rather than leaking dataclass internals.
+        The broadcast/voice surfaces consume the event over HTTP, so we flatten the dataclass
+        here rather than leaking its tuple fields.
     """
     return {
         "cell": list(event.cell),
@@ -74,178 +73,245 @@ def _located_to_dict(event: LocatedEvent) -> Dict[str, Any]:
 
 class LoopRunner:
     """
-    Owns the integration loop, steps it on a background thread, and publishes snapshots.
+    Pre-computes the 3-drone run, streams its base frames + vector/panel state by frame index.
 
     Why:
-        Concentrating the single-writer brain behind one stepper thread is what makes the
-        "single writer, many readers" invariant hold across the HTTP boundary: only this
-        thread mutates the loop; every request just reads the last projected dict under a
-        lock. The dashboard polls; it never drives the brain.
+        The hybrid map needs the demo's unified base image AND live vector overlays, kept in
+        lockstep. Pre-computing the whole run (reusing run_combined) makes that trivial: every
+        frame's base, vectors, and panels come from ONE recorded run, so they can never disagree.
+        One stepper thread advances the index (single writer); requests read cached bytes/state.
     """
 
     def __init__(self) -> None:
-        """Build the loop and publish the t0 (prior) state. Why: /state is valid before any step."""
-        self._lock = threading.Lock()
+        """Build the run and publish frame 0. Why: /state + /map_base are valid before any step."""
+        self._lock = threading.Lock()          # guards the published /state dict
+        self._render_lock = threading.Lock()   # serializes matplotlib base rendering (not threadsafe)
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._state_dict: Dict[str, Any] = {}
         self._located: Optional[Dict[str, Any]] = None
-        self._trend: list = []
+        self._base_cache: Dict[int, bytes] = {}
+        self._guide_base: Optional[bytes] = None
         self._terrain_png: Optional[bytes] = None
         self._build()
 
+    # --- build / scenario setup ---
+
     def _build(self) -> None:
         """
-        (Re)build the loop from scratch and project its prior state.
+        (Re)compute the 3-drone search + guide-home run and publish frame 0.
 
         Why:
-            Used on construction and on /reset, so a live demo can replay the search without
-            restarting the server. Trend/located are cleared because they belong to a run.
+            Used on construction and /reset, so the demo can replay. Everything the frames need
+            (grid, planner, hillshade, the search frames + guidance states) is captured once here.
         """
-        self._loop, self.terrain_name = build_showcase_loop()
-        self._trend = []
+        combined = run_combined(seed=0, n_drones=_N_DRONES)
+        if combined is not None:
+            self._result, guidance = combined
+        else:
+            # Rare: the run didn't locate. Fall back to search-only (no guide phase).
+            from src.demo.search_demo import run_multi_drone
+
+            self._result, guidance = run_multi_drone(seed=0, n_drones=_N_DRONES), None
+
+        result = self._result
+        self._grid = result.grid
+        self._cfg = result.cfg
+        self._planner = result.planner
+        self._hill = base_hillshade(self._grid)
+        self._home_cell: Cell = self._grid.latlon_to_cell(*self._cfg.lkp_latlon)
+        self._search_frames = result.frames
+        self._n_search = len(self._search_frames)
+        self._located_frame = self._search_frames[-1] if self._search_frames else None
+
+        # Guide-home setup (subsampled to a watchable frame count).
+        if guidance is not None and result.located_event is not None:
+            states = guidance.states
+            if len(states) > _GUIDE_FRAMES:
+                stride = max(1, len(states) // _GUIDE_FRAMES)
+                states = states[::stride]
+                if states[-1] is not guidance.states[-1]:
+                    states.append(guidance.states[-1])
+            self._guide_states = states
+            self._guidance_path = guidance.path
+            self._guiding_id = _guiding_drone_id(self._located_frame.drones, result.subject)
+        else:
+            self._guide_states = []
+            self._guidance_path = None
+            self._guiding_id = 0
+        self._guiding_color = _DRONE_COLORS[self._guiding_id % len(_DRONE_COLORS)]
+        self._n_guide = len(self._guide_states)
+        self._n_total = self._n_search + self._n_guide
+
+        # Reset per-run state and publish frame 0.
+        self._i = 0
+        self._trend: list = []
+        self._base_cache = {}
+        self._guide_base = None
+        # Not pre-latched: /located stays empty until the PLAYBACK reaches the locate frame
+        # (the _advance latch fires when persons_found flips to 1), so the event appears live.
         self._located = None
-        # Guide-home phase state (populated once the search locates). home_cell is known from
-        # the start, so the operators marker can show during the search too.
-        self.guidance_status = "searching"
-        self._guidance_path = None
-        self._home_cell: Cell = self._loop.grid.latlon_to_cell(*self._loop.cfg.lkp_latlon)
-        self._guide_states = []
-        self._guide_i = 0
-        self._guide_drone_cells: list = []
-        # Render the terrain backdrop ONCE per run (it's static — the grid is fixed). None if
-        # the rasters are absent, in which case /terrain.png 404s and the dashboard falls back
-        # to its procedural backdrop. Bytes are immutable, so the endpoint reads them lock-free.
         try:
-            self._terrain_png = render_terrain_png(self._loop.grid)
+            self._terrain_png = render_terrain_png(self._grid)  # superseded by the base image, kept for /terrain.png
         except FileNotFoundError:
             self._terrain_png = None
         with self._lock:
-            self._state_dict = project(self._loop.brain.map_state(), self._context())
+            self._state_dict = self._project_frame(0)
+        self._trend.append((0.0, self._state_dict["confidenceToDeclare"]))
 
-    def _context(self) -> ProjectionContext:
+    # --- per-frame state + base rendering ---
+
+    def _synth_pose(self, path: List[Cell]) -> Optional[CameraPose]:
         """
-        Assemble the ProjectionContext from the loop's current path/pose/trend.
+        A plausible CameraPose for the telemetry panel, from the active drone's last step.
+
+        Args:
+            path: The active drone's flown cells.
+
+        Returns:
+            A CameraPose (heading from the last step, a nominal altitude), or None if no path.
 
         Why:
-            The projection is a pure function of (snapshot, context); the server is what
-            accumulates the context across steps (the flown path lives in the loop, the trend
-            history lives here). Called only from the stepper thread, so reading _trend is safe.
+            The multi-drone planner loop doesn't surface a single pose per frame, but the
+            telemetry readout (altitude/heading/speed) wants one. Synthesizing it from the drone's
+            motion keeps the panel alive without threading poses through the recorded run.
         """
-        loop = self._loop
-        # During guidance the drone's leading positions extend the flown path, so dronePos
-        # follows the leader and flightPath shows it flying the route home.
-        subject_cell = None
-        if self.guidance_status in ("guiding", "arrived") and self._guide_states:
-            subject_cell = self._guide_states[self._guide_i].subject_cell
-        return ProjectionContext(
-            drone_path=list(loop.drone_path) + self._guide_drone_cells,
-            last_pose=loop.last_pose,
-            trend=list(self._trend),
-            located_cell=loop.located_event.cell if loop.located_event else None,
-            started_at="live",
-            guidance_path=self._guidance_path,
-            subject_cell=subject_cell,
-            home_cell=self._home_cell,
-            guidance_status=self.guidance_status,
+        if not path:
+            return None
+        pos = path[-1]
+        prev = path[-2] if len(path) >= 2 else pos
+        dr, dc = pos[0] - prev[0], pos[1] - prev[1]
+        heading = 90.0 if (dr == 0 and dc == 0) else math.degrees(math.atan2(dc, dr)) % 360.0
+        lat, lon = self._grid.cell_to_latlon(*pos)
+        return CameraPose(frame_id="live", drone_latlon=(lat, lon), altitude_agl_m=140.0,
+                          heading_deg=heading, gimbal_pitch_deg=-88.0, fov_deg=(70.0, 40.0),
+                          image_size_px=(1920, 1080))
+
+    def _project_frame(self, i: int) -> Dict[str, Any]:
+        """
+        Build the /state payload for frame i (search or guide phase).
+
+        Args:
+            i: Global frame index (0..n_search-1 = search; n_search..n_total-1 = guide).
+
+        Returns:
+            The projected UI-MapState dict for that frame.
+
+        Why:
+            One function maps a recorded frame to the dashboard payload — fleet vectors + panels in
+            the search phase, the leader + guide overlay in the guide phase — all keyed to `i` so
+            the client can fetch the matching base image.
+        """
+        if i < self._n_search:
+            frame = self._search_frames[i]
+            map_state = frame.map_state
+            drones = [
+                DroneVector(
+                    id=d.drone_id,
+                    color=_DRONE_COLORS[d.drone_id % len(_DRONE_COLORS)],
+                    pos=d.path[-1] if d.path else self._home_cell,
+                    path=list(d.path),
+                )
+                for d in frame.drones
+            ]
+            primary_path = drones[0].path if drones else []
+            located = map_state.status is Status.LOCATED
+            ctx = ProjectionContext(
+                drones=drones, frame=i, home_cell=self._home_cell,
+                drone_path=primary_path, last_pose=self._synth_pose(primary_path),
+                trend=list(self._trend), started_at="live",
+                located_cell=map_state.top_cells[0][0] if located else None,
+                guidance_status="searching",
+            )
+            return project(map_state, ctx)
+
+        # --- guide phase: constant located belief base, the leader + the guide overlay ---
+        gi = i - self._n_search
+        gs = self._guide_states[gi]
+        map_state = self._located_frame.map_state
+        leader_path = [s.drone_cell for s in self._guide_states[: gi + 1]]
+        leader = DroneVector(id=self._guiding_id, color=self._guiding_color, pos=gs.drone_cell, path=leader_path)
+        ctx = ProjectionContext(
+            drones=[leader], frame=i, home_cell=self._home_cell,
+            drone_path=leader_path, last_pose=self._synth_pose(leader_path),
+            trend=list(self._trend), started_at="live",
+            located_cell=map_state.top_cells[0][0],
+            guidance_path=self._guidance_path, subject_cell=gs.subject_cell,
+            guidance_status="arrived" if gi >= self._n_guide - 1 else "guiding",
         )
+        return project(map_state, ctx)
+
+    def _base_png(self, i: int) -> bytes:
+        """
+        The base image bytes for frame i (rendered + cached; the guide base is one constant frame).
+
+        Args:
+            i: Global frame index.
+
+        Returns:
+            PNG bytes of the unified base for that frame.
+
+        Why:
+            Search frames each have their own belief+sectors; the guide phase freezes the belief,
+            so its base is rendered ONCE and reused. The render lock serializes matplotlib (which
+            isn't threadsafe) across the stepper thread and any request handler.
+        """
+        if i < self._n_search:
+            if i not in self._base_cache:
+                frame = self._search_frames[i]
+                with self._render_lock:
+                    self._base_cache[i] = render_base_frame(
+                        self._grid, frame.posterior, self._hill,
+                        planner=self._planner, ranked_sectors=frame.ranked_sectors, drones=frame.drones,
+                    )
+            return self._base_cache[i]
+        # Guide phase: one constant base (the located belief, no sectors).
+        if self._guide_base is None:
+            post = self._located_frame.posterior
+            with self._render_lock:
+                self._guide_base = render_base_frame(self._grid, post, self._hill)
+        return self._guide_base
+
+    # --- the stepper (single writer) ---
 
     def start(self) -> None:
-        """Spawn the background stepper. Why: begins playing the loop when the server boots."""
+        """Spawn the background stepper. Why: begins playing the recorded run when the server boots."""
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="sar-loop-stepper", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="sar-frame-stepper", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
-        """Signal the stepper to halt and join it. Why: clean shutdown on server exit/reset."""
+        """Signal the stepper to halt and join it. Why: clean shutdown on exit/reset."""
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
 
     def _run(self) -> None:
-        """
-        The single-writer loop: advance ONE phase-step, then wait — until the run is finished.
-
-        Why:
-            This is the ONLY place state advances. It runs two phases in sequence: the SEARCH
-            loop (detector->geo->brain) until it's done, then — if it located — the GUIDE-HOME
-            phase (drone leads the subject home). One thread, one writer, across both phases.
-        """
+        """Advance one frame per interval until the run is finished. Why: the only place state advances."""
         while not self._stop.is_set():
             self._advance()
-            # Wait on the stop event (not time.sleep) so shutdown is responsive mid-interval.
             self._stop.wait(_STEP_INTERVAL_S)
 
     def _advance(self) -> None:
         """
-        Advance the run by one step of the current phase (search, then guide-home).
+        Advance to the next frame: warm its base, project + publish its state, extend the trend.
 
         Why:
-            Splitting the per-tick logic out of the wait loop keeps each phase legible: step the
-            search until done; on the first done-and-located tick build the route + guidance;
-            then replay the guidance frames until the subject arrives; then idle.
+            Pre-rendering the next base in the stepper thread means the request handler almost
+            always serves it from cache. Publishing under the lock keeps readers consistent.
         """
-        loop = self._loop
-        if not loop.is_done:
-            result = loop.step()                       # SEARCH phase
-            if result is not None:
-                map_state, event = result
-                ui = project(map_state, self._context())
-                with self._lock:
-                    self._state_dict = ui
-                    self._trend.append((map_state.timestamp, ui["confidenceToDeclare"]))
-                    if event is not None and self._located is None:
-                        self._located = _located_to_dict(event)
-        elif self.guidance_status == "searching" and loop.located_event is not None:
-            self._build_guidance()                     # transition: plan the route home
-            self._publish_guidance()
-        elif self.guidance_status == "guiding":         # GUIDE-HOME phase
-            if self._guide_i < len(self._guide_states) - 1:
-                self._guide_i += 1
-            else:
-                self.guidance_status = "arrived"
-            self._publish_guidance()
-        # else: arrived, or never located -> nothing left to advance (idle).
-
-    def _build_guidance(self) -> None:
-        """
-        Plan the terrain-aware route home and simulate the guidance, ready to replay.
-
-        Why:
-            Built once at the search->guide transition: the route the located subject walks back
-            to the operators, and the leader/follower positions per tick. Down-sampled to
-            _GUIDE_FRAMES so the dashboard plays it out in a watchable time.
-        """
-        loop = self._loop
-        subject = loop.subject_cell
-        path = plan_return_path(loop.grid, loop.terrain, subject, self._home_cell, cfg=loop.cfg)
-        guidance = simulate_guidance(loop.grid, loop.terrain, path)
-        states = guidance.states
-        if len(states) > _GUIDE_FRAMES:
-            stride = max(1, len(states) // _GUIDE_FRAMES)
-            sampled = states[::stride]
-            if sampled[-1] is not states[-1]:
-                sampled.append(states[-1])
-            states = sampled
-        self._guidance_path = path
-        self._guide_states = states
-        self._guide_i = 0
-        self._guide_drone_cells = []
-        self.guidance_status = "guiding"
-
-    def _publish_guidance(self) -> None:
-        """
-        Publish the projection for the current guidance frame (drone leading, subject following).
-
-        Why:
-            Appends the drone's current lead position to the flown path (so dronePos follows the
-            leader and flightPath shows it flying the route), then republishes under the lock.
-        """
-        st = self._guide_states[self._guide_i]
-        self._guide_drone_cells.append(st.drone_cell)
+        if self._i >= self._n_total - 1:
+            return  # at the final frame -> idle (the run is complete)
+        self._i += 1
+        self._base_png(self._i)  # warm the cache off the request path
+        payload = self._project_frame(self._i)
         with self._lock:
-            self._state_dict = project(self._loop.brain.map_state(), self._context())
+            self._state_dict = payload
+            # Latch the located event the first frame the brain declares it (persons_found == 1).
+            if self._located is None and payload["stats"]["personsFound"] == 1 and self._result.located_event:
+                self._located = _located_to_dict(self._result.located_event)
+        self._trend.append((self._i * _FRAME_DT_S, payload["confidenceToDeclare"]))
 
     # --- read model (lock-guarded; called from request handlers) ---
 
@@ -254,52 +320,58 @@ class LoopRunner:
         with self._lock:
             return self._state_dict
 
+    def base_png(self, i: Optional[int]) -> bytes:
+        """The base image for frame i (or the current frame if None). Why: served by /map_base.png."""
+        idx = self._i if i is None else max(0, min(int(i), self._n_total - 1))
+        return self._base_png(idx)
+
     def located(self) -> Optional[Dict[str, Any]]:
         """The latched LocatedEvent dict, or None. Why: drives the broadcast/notify surface."""
         with self._lock:
             return self._located
 
     def terrain_png(self) -> Optional[bytes]:
-        """The cached terrain backdrop PNG, or None if rasters were absent. Why: served by /terrain.png."""
+        """The cached colorized terrain PNG (superseded by the base image; kept for /terrain.png)."""
         return self._terrain_png
+
+    def _status(self) -> str:
+        """Current phase: searching / guiding / arrived. Why: /health + tests poll this."""
+        if self._i < self._n_search or not self._n_guide:
+            return "searching"
+        return "arrived" if self._i >= self._n_total - 1 else "guiding"
 
     def health(self) -> Dict[str, Any]:
         """Run progress for /health and the reset response. Why: lets the UI show frame i/n."""
-        loop = self._loop
         return {
             "status": "ok",
-            "frame": loop.frame_index,
-            "n_frames": loop.n_frames,
-            "done": loop.is_done,
+            "frame": self._i,
+            "n_frames": self._n_total,
+            "n_search": self._n_search,
+            "done": self._i >= self._n_total - 1,
             "located": self._located is not None,
-            "guidance_status": self.guidance_status,
-            "terrain": self.terrain_name,
+            "guidance_status": self._status(),
+            "n_drones": _N_DRONES,
+            "terrain": "REAL rasters (DEM + WorldCover)",
             "step_interval_s": _STEP_INTERVAL_S,
         }
 
     def reset(self) -> Dict[str, Any]:
-        """Stop, rebuild, restart the loop. Why: replay the demo without restarting uvicorn."""
+        """Stop, recompute, restart. Why: replay the demo without restarting uvicorn."""
         self.stop()
         self._build()
         self.start()
         return self.health()
 
 
-# Module-level runner so `uvicorn integration.server:app` finds a ready `app`. The thread is
-# started/stopped by the lifespan handler below (not at import) so importing the module — e.g.
-# in a test — does not spawn a background thread.
+# Module-level runner so `uvicorn integration.server:app` finds a ready `app`. The stepper thread
+# is started/stopped by the lifespan handler (not at import), so importing this module is side-effect
+# free apart from building the (pre-computed) run.
 runner = LoopRunner()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Start the stepper on server startup, stop it on shutdown.
-
-    Why:
-        Tying the background thread to the app lifespan keeps importing this module side-effect
-        free (good for tests) while guaranteeing the loop is running whenever the server serves.
-    """
+    """Start the stepper on startup, stop it on shutdown. Why: ties the thread to the app lifespan."""
     runner.start()
     try:
         yield
@@ -307,7 +379,7 @@ async def lifespan(app: FastAPI):
         runner.stop()
 
 
-app = FastAPI(title="SAR integration server", version="1.0", lifespan=lifespan)
+app = FastAPI(title="SAR integration server", version="2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
@@ -324,41 +396,42 @@ def get_health() -> Dict[str, Any]:
 
 @app.get("/state")
 def get_state() -> Dict[str, Any]:
-    """The live projected UI-MapState. Why: THE endpoint the dashboard renders from."""
+    """The live projected UI-MapState (panels + fleet vectors + frame). Why: the dashboard's poll target."""
     return runner.state()
+
+
+@app.get("/map_base.png")
+def get_map_base(v: Optional[int] = None) -> Response:
+    """
+    The unified base map image for frame `v` (terrain + posterior + sectors).
+
+    Why:
+        The dashboard draws its live vector overlays ON TOP of this. The client passes the `frame`
+        it got from /state as `?v=`, so the image and the vectors are the same frame. Bytes are
+        cached per index, so this is cheap; the no-store header keeps the browser fetching fresh
+        frames (the `?v=` already busts the cache, but we're explicit).
+    """
+    png = runner.base_png(v)
+    return Response(content=png, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/located")
 def get_located() -> Dict[str, Any]:
-    """
-    The LocatedEvent once declared, else {"located": false}.
-
-    Why:
-        A null-able event the broadcast/notify surface polls; wrapping the absent case in a
-        small object (rather than returning null) keeps the client's parsing uniform.
-    """
+    """The LocatedEvent once declared, else {"located": false}. Why: the broadcast/notify surface."""
     event = runner.located()
     return event if event is not None else {"located": False}
 
 
 @app.get("/terrain.png")
 def get_terrain() -> Response:
-    """
-    The real-terrain backdrop image (muted colorized shaded relief), or 404 if unavailable.
-
-    Why:
-        The dashboard renders this behind the heatmap to ground the map in the actual Marin
-        region. It's static per run (the grid is fixed), so it's rendered once and served from
-        cache. A 404 lets the dashboard cleanly fall back to its procedural backdrop.
-    """
+    """The colorized terrain PNG (superseded by the base image; kept for compatibility). 404 if absent."""
     png = runner.terrain_png()
     if png is None:
         return Response(status_code=404)
-    # Cache-friendly: the image never changes within a run.
     return Response(content=png, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
 
 
 @app.post("/reset")
 def post_reset() -> Dict[str, Any]:
-    """Replay the search from the prior. Why: re-run the live demo without a server restart."""
+    """Replay the run from the start. Why: re-run the live demo without restarting uvicorn."""
     return runner.reset()
