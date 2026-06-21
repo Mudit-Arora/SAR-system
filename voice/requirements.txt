@@ -4,3 +4,4 @@ deepgram-sdk==6.0.0
 twilio==9.10.2
 python-dotenv==1.2.1
 python-multipart==0.0.22
+sentry-sdk==2.63.0  # optional error monitoring for the deployed agent; no-op without SENTRY_DSN

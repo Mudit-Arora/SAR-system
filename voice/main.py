@@ -21,7 +21,15 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.responses import PlainTextResponse
 from starlette.websockets import WebSocketDisconnect
 
-from config import SERVER_HOST, SERVER_PORT, SERVER_EXTERNAL_URL, DEEPGRAM_API_KEY
+from config import (
+    SERVER_HOST,
+    SERVER_PORT,
+    SERVER_EXTERNAL_URL,
+    DEEPGRAM_API_KEY,
+    SENTRY_DSN,
+    SENTRY_ENVIRONMENT,
+    SENTRY_TRACES_SAMPLE_RATE,
+)
 from telephony.routes import incoming_call, twilio_websocket
 from transcript_hub import transcript_hub
 
@@ -34,6 +42,28 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Sentry (optional, additive) - error monitoring for the Fly-deployed agent
+# ---------------------------------------------------------------------------
+# Initialized at MODULE level so it runs whether the app starts via `python main.py`
+# (the Dockerfile CMD on Fly) or `uvicorn main:app`. With no SENTRY_DSN the SDK is
+# never initialized, so the agent behaves exactly as before. sentry-sdk auto-enables
+# its Starlette + asyncio + logging integrations, so unhandled errors in the HTTP/WS
+# routes are reported without per-route wiring; session.py adds call_sid context to
+# the in-call failures it currently swallows.
+if SENTRY_DSN:
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=SENTRY_ENVIRONMENT,
+        traces_sample_rate=SENTRY_TRACES_SAMPLE_RATE,
+        send_default_pii=False,
+    )
+    logger.info("Sentry initialized (environment=%s)", SENTRY_ENVIRONMENT)
+else:
+    logger.info("Sentry not configured (SENTRY_DSN unset) - monitoring OFF")
 
 
 async def dashboard(request):

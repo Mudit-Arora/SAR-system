@@ -21,6 +21,8 @@ import base64
 import json
 import logging
 
+import sentry_sdk
+
 from starlette.websockets import WebSocket
 
 from deepgram import AsyncDeepgramClient
@@ -233,6 +235,11 @@ class VoiceAgentSession:
                 logger.warning(f"[SESSION:{self.call_sid}] Agent warning: {message.description}")
 
         except Exception as e:
+            # A message-handling failure mid-call is otherwise only logged; report it with
+            # the call_sid so the deployed agent's errors are visible. No-op without a DSN.
+            with sentry_sdk.new_scope() as scope:
+                scope.set_tag("call_sid", self.call_sid)
+                sentry_sdk.capture_exception(e)
             logger.error(f"[SESSION:{self.call_sid}] Error handling message: {e}")
 
     # ------------------------------------------------------------------
@@ -259,6 +266,14 @@ class VoiceAgentSession:
             result = await dispatch_function(function_name, args)
             logger.info(f"[SESSION:{self.call_sid}] Function result: {function_name} → {json.dumps(result)}")
         except Exception as e:
+            # Report the in-call tool failure to Sentry with call context; behavior is
+            # unchanged (we still log + return an error result so the agent can speak a
+            # fallback). new_scope isolates the tags to THIS event across concurrent calls;
+            # capture_exception is a no-op when Sentry isn't configured.
+            with sentry_sdk.new_scope() as scope:
+                scope.set_tag("call_sid", self.call_sid)
+                scope.set_context("function_call", {"name": function_name, "args": args})
+                sentry_sdk.capture_exception(e)
             logger.error(f"[SESSION:{self.call_sid}] Function error: {function_name} → {e}")
             result = {"error": str(e)}
 

@@ -50,6 +50,18 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
 # ---------------------------------------------------------------------------
+# Sentry (optional - error monitoring for the deployed agent)
+# ---------------------------------------------------------------------------
+# DSN for Sentry. Unset -> monitoring stays OFF (init becomes a no-op and the
+# agent behaves exactly as before). On Fly, set it as a secret:
+#   flyctl secrets set SENTRY_DSN=...
+# This is the strongest case for Sentry in the project: the agent runs remotely
+# on Fly, so a crash here is otherwise invisible from the demo laptop.
+SENTRY_DSN = os.getenv("SENTRY_DSN")
+SENTRY_ENVIRONMENT = os.getenv("SENTRY_ENVIRONMENT", "production")
+SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.2"))
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 if not DEEPGRAM_API_KEY:
