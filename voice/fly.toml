@@ -18,7 +18,9 @@ primary_region = 'iad'
   force_https = true
   auto_stop_machines = 'suspend'
   auto_start_machines = true
-  min_machines_running = 0
+  # Keep one VM warm so the demo phone call connects instantly (no 1-3s
+  # suspend-wake on the first ring). Set back to 0 after the event to idle-scale.
+  min_machines_running = 1
 
 [[vm]]
   memory = '512mb'
