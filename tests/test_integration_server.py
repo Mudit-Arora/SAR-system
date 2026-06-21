@@ -14,11 +14,14 @@
 
 from __future__ import annotations
 
+import pathlib
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 import integration.server as server
+from src.search.terrain_raster import _DEFAULT_DEM
 
 # Same required top-level keys the dashboard's types.ts MapState declares.
 _REQUIRED_KEYS = {
@@ -78,3 +81,17 @@ def test_server_steps_loop_to_locate(monkeypatch):
         state = client.get("/state").json()
         assert state["confidenceToDeclare"] == 100
         assert state["stats"]["personsFound"] == 1
+
+
+@pytest.mark.skipif(not pathlib.Path(_DEFAULT_DEM).exists(), reason="real DEM raster not present")
+def test_terrain_endpoint_serves_png():
+    """
+    Scenario: GET /terrain.png with the real rasters present.
+    Why it matters: the dashboard renders this image behind the heatmap; it must be served as
+    a real PNG with the image/png content type so the browser can use it as a backdrop.
+    """
+    with TestClient(server.app) as client:
+        res = client.get("/terrain.png")
+        assert res.status_code == 200
+        assert res.headers["content-type"] == "image/png"
+        assert res.content[:8] == b"\x89PNG\r\n\x1a\n"  # PNG magic bytes

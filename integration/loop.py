@@ -222,6 +222,51 @@ def build_simulator_loop(
     return loop, terrain_name
 
 
+def build_showcase_loop(
+    *, seed: int = 0, false_positive_rate: float = 0.01
+) -> Tuple[SearchLoop, str]:
+    """
+    Build the REAL-TERRAIN loop (the dashboard's default) — the showcase scenario, steppable.
+
+    Args:
+        seed: Detector-simulator RNG seed (deterministic run).
+        false_positive_rate: Per-frame spurious-detection chance (matches the showcase).
+
+    Returns:
+        (loop, terrain_name): a SearchLoop on real Marin terrain that locates, or — if the
+        rasters are absent — the synthetic default loop (which also locates), so the server
+        always has a working demo.
+
+    Why:
+        The dashboard exists to show the real region, so its loop runs on the real DEM +
+        WorldCover with the showcase's tuning (concentration floor 3.5, thermal floor 0.8) and
+        the NW subject placement that scenario is built around — the same proven setup as
+        `src/demo/showcase.py` (which locates at 0-cell error), just steppable for the server.
+        Falls back to synthetic when the rasters aren't present so the server never dead-ends.
+    """
+    import pathlib
+
+    from src.search.terrain_raster import _DEFAULT_DEM, _DEFAULT_WORLDCOVER
+
+    rasters_present = pathlib.Path(_DEFAULT_DEM).exists() and pathlib.Path(_DEFAULT_WORLDCOVER).exists()
+    if not rasters_present:
+        # No real terrain on this machine -> the synthetic-tuned scenario, which locates.
+        return build_simulator_loop(seed=seed, false_positive_rate=false_positive_rate)
+
+    from src.demo.mock_stream import REAL_TERRAIN_SUBJECT_OFFSET
+
+    # Real-terrain tuning. Kept in sync with src/demo/showcase.SHOWCASE_CONFIG; constructed
+    # inline (rather than imported) so this module stays free of showcase's matplotlib import.
+    cfg = BrainConfig(located_concentration_ratio=3.5, thermal_detection_floor=0.8)
+    return build_simulator_loop(
+        cfg=cfg,
+        use_real_terrain=True,
+        offset=REAL_TERRAIN_SUBJECT_OFFSET,
+        seed=seed,
+        false_positive_rate=false_positive_rate,
+    )
+
+
 def build_yolo_loop(
     video_path: str,
     weights: str,

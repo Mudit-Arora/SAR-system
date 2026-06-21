@@ -23,12 +23,13 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.common.contracts import LocatedEvent
 from integration.dashboard_projection import ProjectionContext, project
-from integration.loop import build_simulator_loop
+from integration.loop import build_showcase_loop
+from integration.terrain_render import render_terrain_png
 
 # Seconds between frames. Slow enough to WATCH the map evolve in the demo, fast enough that
 # the ~46-frame run locates in well under a minute. A tunable, not a constant in the math.
@@ -84,6 +85,7 @@ class LoopRunner:
         self._state_dict: Dict[str, Any] = {}
         self._located: Optional[Dict[str, Any]] = None
         self._trend: list = []
+        self._terrain_png: Optional[bytes] = None
         self._build()
 
     def _build(self) -> None:
@@ -94,9 +96,16 @@ class LoopRunner:
             Used on construction and on /reset, so a live demo can replay the search without
             restarting the server. Trend/located are cleared because they belong to a run.
         """
-        self._loop, self.terrain_name = build_simulator_loop()
+        self._loop, self.terrain_name = build_showcase_loop()
         self._trend = []
         self._located = None
+        # Render the terrain backdrop ONCE per run (it's static — the grid is fixed). None if
+        # the rasters are absent, in which case /terrain.png 404s and the dashboard falls back
+        # to its procedural backdrop. Bytes are immutable, so the endpoint reads them lock-free.
+        try:
+            self._terrain_png = render_terrain_png(self._loop.grid)
+        except FileNotFoundError:
+            self._terrain_png = None
         with self._lock:
             self._state_dict = project(self._loop.brain.map_state(), self._context())
 
@@ -165,6 +174,10 @@ class LoopRunner:
         """The latched LocatedEvent dict, or None. Why: drives the broadcast/notify surface."""
         with self._lock:
             return self._located
+
+    def terrain_png(self) -> Optional[bytes]:
+        """The cached terrain backdrop PNG, or None if rasters were absent. Why: served by /terrain.png."""
+        return self._terrain_png
 
     def health(self) -> Dict[str, Any]:
         """Run progress for /health and the reset response. Why: lets the UI show frame i/n."""
@@ -241,6 +254,23 @@ def get_located() -> Dict[str, Any]:
     """
     event = runner.located()
     return event if event is not None else {"located": False}
+
+
+@app.get("/terrain.png")
+def get_terrain() -> Response:
+    """
+    The real-terrain backdrop image (muted colorized shaded relief), or 404 if unavailable.
+
+    Why:
+        The dashboard renders this behind the heatmap to ground the map in the actual Marin
+        region. It's static per run (the grid is fixed), so it's rendered once and served from
+        cache. A 404 lets the dashboard cleanly fall back to its procedural backdrop.
+    """
+    png = runner.terrain_png()
+    if png is None:
+        return Response(status_code=404)
+    # Cache-friendly: the image never changes within a run.
+    return Response(content=png, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
 
 
 @app.post("/reset")
