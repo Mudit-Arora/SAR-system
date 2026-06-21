@@ -14,17 +14,22 @@ the current design (state these out loud; don't let a demo imply otherwise).
 
 ## A. Deferred hardening (do once the GeoReferencer + real detector are wired)
 
-### A1. Cumulative-clearance cap per (cell, sensor)
-- **What:** `coverage` compounds as `cleared_i = 1 − Π(1 − d_i)` (see the `TODO` at the
-  coverage line in `src/search/update.py`). This assumes **independent** looks.
-- **Why deferred:** repeated passes from the same angle/sensor miss *identically* under
-  canopy, so the product **overstates** clearance (interfaces.md §5.5). The right cap
-  depends on how often real flights re-look at a cell from the same sensor and how
-  correlated those misses are — numbers we can only get from real coverage patterns.
-  Tuning it now against the synthetic mock stream would calibrate against fiction.
-- **Trigger to do it:** once the real GeoReferencer is producing footprints and we can
-  observe actual re-look frequency/overlap. Likely a `cap` per `(cell, sensor_type)`.
-- **Seam:** already isolated to the one coverage-compounding line; no interface change.
+### A1. Cumulative-clearance cap per (cell, sensor) — IMPLEMENTED
+- **Status:** built. The geo+brain feasibility test (Geo Unit 4) gave this a concrete,
+  biting failure — loitering over the subject under canopy, the *misses* repeatedly
+  cleared the subject cell and eroded the located signal back to the prior, so the cap was
+  promoted from deferred to done.
+- **What:** non-detection clearing is now per-sensor and capped — each sensor's cumulative
+  clearance of a cell is bounded by `BrainConfig.clearance_cap_per_sensor` (default 0.6),
+  because correlated looks from one sensor over the same canopy miss identically and the
+  independent-looks product overstates clearance (interfaces.md §5.5). The first look still
+  clears by ~`d_i`; only redundant correlated looks are damped. Different sensors clear
+  independently (combined coverage = `1 − Π_sensors (1 − cleared_sensor)`).
+- **Where:** `apply_coverage_and_nondetection` (`src/search/update.py`) takes the per-sensor
+  `cleared` array + `clearance_cap`; the brain holds one array per sensor and derives the
+  displayed `coverage`. Tests: `test_update.py::test_clearance_capped_per_sensor`.
+- **Still tunable:** the cap value (0.6) is calibrated to the demo; real re-look patterns
+  may move it. The principled invariant (correlated looks can't fully clear) is fixed.
 
 ### A2. `P_located` / `located_concentration_ratio` sensitivity sweep
 - **What:** the trigger thresholds (`p_located`, `located_concentration_ratio`) are

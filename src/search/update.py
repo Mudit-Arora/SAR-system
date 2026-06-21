@@ -115,51 +115,54 @@ def gaussian_weight_kernel(sigma_cells: float, radius_cells: int) -> np.ndarray:
 
 def apply_coverage_and_nondetection(
     posterior: np.ndarray,
-    coverage: np.ndarray,
+    cleared: np.ndarray,
     footprint: Iterable[CellCoverage],
     recall: float,
     exclude_cells: Set[Cell],
     grid: GridSpec,
+    clearance_cap: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Apply the non-detection clearing and accumulate coverage over a footprint.
+    Apply the per-sensor capped non-detection clearing over a footprint.
 
     Args:
         posterior: (n_rows, n_cols) current p_i; mutated in place.
-        coverage: (n_rows, n_cols) accumulated cleared_i; mutated in place.
-        footprint: The frame's covered cells (each with coverage_fraction and
-            visibility_weight).
-        recall: The detector recall for this frame's sensor/altitude.
-        exclude_cells: Cells that had a detection — they accrue coverage but are
-            NOT cleared (a detection landed there, so "nothing seen" is false).
+        cleared: (n_rows, n_cols) this SENSOR's cumulative clearance in [0, cap];
+            mutated in place. (The brain keeps one array per sensor.)
+        footprint: The frame's covered cells (coverage_fraction + visibility_weight).
+        recall: The detector recall for this frame's sensor.
+        exclude_cells: Cells that had a detection — NOT cleared and NOT accrued (a
+            detection landed there, so "nothing seen" is false; it isn't ruled out).
         grid: GridSpec, for bounds checking.
+        clearance_cap: Max cumulative clearance this sensor may apply to a cell
+            (interfaces §5.5 correlated-looks cap).
 
     Returns:
-        (posterior, coverage), both mutated and returned for chaining. NOT yet
-        renormalized — the brain renormalizes once after detection boosts too.
+        (posterior, cleared), both mutated and returned. NOT yet renormalized.
 
     Why:
-        Non-detection: p_i <- p_i*(1 - d_i) for each covered cell with no detection
-        (interfaces §5.2). Coverage compounds independently as
-        cleared_i = 1 - Prod_k (1 - d_i^k), so a cell looked at many times with good
-        d_i approaches fully cleared while one weak glance does not.
+        Non-detection: p_i <- p_i*(1 - d_i) (interfaces §5.2) — BUT capped per sensor.
+        Repeated looks from one sensor over the same canopy miss identically, so we
+        cap this sensor's cumulative clearance: the posterior factor applied is the
+        increment from the old cumulative clearance to the (capped) new one, so once a
+        sensor has cleared a cell to the cap, further correlated looks add nothing. The
+        first look still clears by ~d_i; only redundant correlated looks are damped.
     """
     for cc in footprint:
         r, c = cc.cell
         if not grid.in_bounds(r, c):
             continue
+        if (r, c) in exclude_cells:
+            continue  # a detection landed here: not a non-detection, so neither clear nor accrue
         d_i = detection_probability(cc.coverage_fraction, cc.visibility_weight, recall)
-        # Coverage ("where have we looked") accrues on every look, detection or not.
-        # TODO(post-integration): cap cumulative clearance per (cell, sensor). This
-        # product assumes independent looks, but repeated passes from the same angle/
-        # sensor miss identically under canopy, so it OVERSTATES clearance (interfaces
-        # §5.5). Tune against real coverage patterns once geo/detector data flows — see
-        # docs/brain_followups.md. (Seam left here; behavior intentionally simple now.)
-        coverage[r, c] = 1.0 - (1.0 - coverage[r, c]) * (1.0 - d_i)
-        # Probability is cleared only where nothing was detected.
-        if (r, c) not in exclude_cells:
-            posterior[r, c] *= (1.0 - d_i)
-    return posterior, coverage
+        c_old = float(cleared[r, c])
+        # cumulative clearance if looks were independent, then capped for this sensor.
+        c_new = min(clearance_cap, 1.0 - (1.0 - c_old) * (1.0 - d_i))
+        # factor that moves cumulative clearance from c_old to c_new (>= the cap floor).
+        factor = (1.0 - c_new) / (1.0 - c_old) if c_old < 1.0 else 1.0
+        posterior[r, c] *= factor
+        cleared[r, c] = c_new
+    return posterior, cleared
 
 
 def apply_detection_boost(

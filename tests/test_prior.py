@@ -251,3 +251,28 @@ def test_synthetic_terrain_context_describes_a_cell(grid, cfg):
     if len(cliff_cells):  # the stub always carves a crest, but guard for tiny grids
         r, c = (int(cliff_cells[0][0]), int(cliff_cells[0][1]))
         assert terrain.context(grid, (r, c))["land_cover"] == "steep/cliff"
+
+
+def test_synthetic_visibility_low_in_canopy_high_in_open():
+    """
+    Scenario: build the visibility layer over the full demo grid.
+    Why it matters: the forested canyon (near the drainage) must read as LOW visibility
+    and the open areas HIGH, in [0,1] — that contrast is what motivates repeated looks
+    and the thermal pass. Also pins it's deterministic and inversely tracks the drainage.
+    """
+    cfg = BrainConfig()  # full 160x160 demo grid
+    grid = GridSpec.from_config(cfg)
+    terrain = SyntheticTerrain(cfg)
+    vis = terrain.visibility(grid)
+
+    assert vis.shape == (cfg.n_rows, cfg.n_cols)
+    assert vis.min() >= 0.0 and vis.max() <= 1.0
+
+    # A cell on the drainage (forested) is less visible than a far-off open cell.
+    lkp_r, lkp_c = grid.latlon_to_cell(*cfg.lkp_latlon)
+    on_drainage = (lkp_r - 17, lkp_c - 15)        # down the canyon, near the drainage line
+    open_corner = (5, 155)                         # far from the drainage
+    assert vis[on_drainage] < vis[open_corner]
+    assert vis[open_corner] == pytest.approx(0.90, abs=0.05)  # ~open visibility
+
+    assert np.array_equal(vis, SyntheticTerrain(cfg).visibility(grid))  # deterministic

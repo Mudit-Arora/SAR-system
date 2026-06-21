@@ -25,6 +25,7 @@ from src.common.contracts import (
     LocatedEvent,
     MapState,
     Observation,
+    SensorType,
     Status,
 )
 from src.common.grid import GridSpec
@@ -73,6 +74,13 @@ class SearchBrain:
         # State the brain owns and is the sole writer of.
         self.posterior, self.p_out = build_prior(self.grid, cfg, terrain)
         self.coverage = np.zeros((self.grid.n_rows, self.grid.n_cols), dtype=float)
+        # Per-sensor cumulative clearance (capped, interfaces §5.5). Kept separate per
+        # sensor because correlated looks are within a sensor; the displayed `coverage`
+        # is their combination. One array per SensorType value.
+        self._cleared_by_sensor = {
+            s.value: np.zeros((self.grid.n_rows, self.grid.n_cols), dtype=float)
+            for s in SensorType
+        }
         self.tracker = BlobTracker(cfg)
         self.update_count = 0
         self.timestamp = 0.0
@@ -144,10 +152,15 @@ class SearchBrain:
         exclude_cells = {d.cell for d in detections}
         recall = self._cfg.recall_for(observation.sensor_type.value)
 
-        # 1) Non-detection clearing + coverage accumulation over the footprint.
+        # 1) Non-detection clearing, capped per sensor (correlated looks — §5.5), into
+        #    THIS sensor's clearance array; then derive the displayed coverage from all
+        #    sensors' clearance.
+        cleared = self._cleared_by_sensor[observation.sensor_type.value]
         apply_coverage_and_nondetection(
-            self.posterior, self.coverage, observation.footprint, recall, exclude_cells, self.grid
+            self.posterior, cleared, observation.footprint, recall, exclude_cells,
+            self.grid, self._cfg.clearance_cap_per_sensor,
         )
+        self.coverage = self._combined_coverage()
 
         # 2) Capped detection boosts (the tracker decides the effective LR per blob,
         #    so correlated frames of one subject are not re-multiplied — §5.4).
@@ -180,6 +193,24 @@ class SearchBrain:
         return event
 
     # --- the read model (single source of truth, published as snapshots) ---
+
+    def _combined_coverage(self) -> np.ndarray:
+        """
+        Combine the per-sensor clearance arrays into one "how cleared" coverage layer.
+
+        Returns:
+            (n_rows, n_cols) coverage in [0, 1]: 1 - Π_sensors (1 - cleared_sensor).
+
+        Why:
+            Different sensors clear independently (thermal sees through canopy that
+            blocks color), so a cell's overall cleared-ness combines them as independent.
+            Deriving coverage from the capped per-sensor arrays keeps the displayed
+            "where have we cleared" consistent with what actually moved the posterior.
+        """
+        remaining = np.ones_like(self.posterior)
+        for arr in self._cleared_by_sensor.values():
+            remaining = remaining * (1.0 - arr)
+        return 1.0 - remaining
 
     def _next_target(self) -> Optional[tuple]:
         """

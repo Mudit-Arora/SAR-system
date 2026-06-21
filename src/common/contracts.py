@@ -54,6 +54,95 @@ class Status(str, Enum):
     LOCATED = "located"
 
 
+# --- Detector & telemetry inputs (interfaces.md §2-§3: detector/telemetry -> geo) ---
+#
+# These mirror the ratified interfaces.md field sets. They are the EXPECTED shape, not a
+# hard guarantee: the detector is a separate track, so a thin adapter at the geo boundary
+# (Geo Unit 2) normalizes whatever it actually emits into these types. Geo never depends on
+# the detector's internals — only on this normalized form.
+
+
+@dataclass(frozen=True)
+class Detection:
+    """
+    One pixel-space detection from the detector (geography-blind).
+
+    Args (fields):
+        bbox_xywh: Pixel box as (x, y, w, h) — top-left corner + size, in image pixels.
+        confidence: Raw detector score in [0, 1]. Evidence strength, NOT a probability
+            of presence (the brain treats it as bucketed/uncalibrated, interfaces §5.3).
+        class_name: The detected class; "person" for the weekend. (Named class_name
+            because `class` is a Python keyword; maps to the contract's `class` field.)
+
+    Why:
+        The detector never sees geography, which is what keeps its backend swappable; all
+        it reports is a box, a score, and a label. Geo turns the box into a ground cell.
+    """
+
+    bbox_xywh: Tuple[float, float, float, float]
+    confidence: float
+    class_name: str = "person"
+
+
+@dataclass(frozen=True)
+class DetectorOutput:
+    """
+    The detector's output for one frame (interfaces §2). Pixel-space, no lat/lon, no grid.
+
+    Args (fields):
+        frame_id: Stable handle for this frame; the join key to its CameraPose.
+        timestamp: When the frame was captured (sim clock is fine).
+        detections: Zero or more Detection. An EMPTY list is meaningful — it is the
+            non-detection signal that lets the map lower probability over the covered area.
+        model_id: Which backend produced this (e.g. "yolo11s-pretrained"); provenance and
+            A/B of a fine-tuned swap.
+        sensor_type: COLOR or THERMAL; affects detection probability downstream (§5).
+        inference_ms: Optional latency, for the dashboard / observability.
+
+    Why:
+        This is boundary A — the seam where the teammate's detector plugs in. Geo consumes
+        exactly this (after the adapter normalizes it), so swapping simulator -> recorded
+        trace -> live detector is wiring, not redesign.
+    """
+
+    frame_id: str
+    timestamp: float
+    detections: List[Detection]
+    model_id: str
+    sensor_type: SensorType
+    inference_ms: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class CameraPose:
+    """
+    Per-frame camera telemetry (interfaces §3), supplied alongside each frame.
+
+    Args (fields):
+        frame_id: Join key to DetectorOutput.
+        drone_latlon: (lat, lon) camera position.
+        altitude_agl_m: Height above ground level; sets the ground sample distance.
+        heading_deg: Compass heading of the camera (0 = north, 90 = east).
+        gimbal_pitch_deg: Downward tilt; 90 = straight down (nadir).
+        fov_deg: Field of view as (horizontal, vertical) in degrees. (interfaces §3 allows
+            a single float or (h, v); we use the structured (h, v) form geo needs.)
+        image_size_px: Frame dimensions as (width, height) in pixels, to map pixels->ground.
+
+    Why:
+        The detector is geography-blind; this telemetry is what lets geo place a pixel box
+        on the real ground. The Detector never sees this — it is joined to DetectorOutput
+        by frame_id at the geo boundary.
+    """
+
+    frame_id: str
+    drone_latlon: Tuple[float, float]
+    altitude_agl_m: float
+    heading_deg: float
+    gimbal_pitch_deg: float
+    fov_deg: Tuple[float, float]
+    image_size_px: Tuple[int, int]
+
+
 # --- Observation and its parts (interfaces.md §4: geo -> map) ---
 
 

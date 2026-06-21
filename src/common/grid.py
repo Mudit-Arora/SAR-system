@@ -118,6 +118,29 @@ class GridSpec:
         north_m = (lat - self.origin[0]) * _M_PER_DEG_LAT
         return east_m, north_m
 
+    def local_m_to_cell(self, east_m: float, north_m: float) -> Tuple[int, int]:
+        """
+        Map local meters (east, north) from the origin to a (row, col) cell index.
+
+        Args:
+            east_m: Meters east of the SW-corner origin.
+            north_m: Meters north of the SW-corner origin.
+
+        Returns:
+            (row, col) integer cell index. May fall outside the grid; use in_bounds()
+            to check — not clamped, so callers can detect off-region points.
+
+        Why:
+            The GeoReferencer projects a pixel through the camera pose to a ground point
+            in local meters; this is the final meters->cell step. Exposing it (rather than
+            only latlon->cell) lets geo stay in the flat meter frame end to end, avoiding a
+            needless round-trip through lat/lon.
+        """
+        # floor so a point anywhere inside a cell maps to that cell's index.
+        col = int(math.floor(east_m / self.cell_size_m))
+        row = int(math.floor(north_m / self.cell_size_m))
+        return row, col
+
     def latlon_to_cell(self, lat: float, lon: float) -> Tuple[int, int]:
         """
         Map a (lat, lon) to its (row, col) cell index.
@@ -137,10 +160,7 @@ class GridSpec:
             reason GridSpec exists.
         """
         east_m, north_m = self.latlon_to_local_m(lat, lon)
-        # floor division so a point anywhere inside a cell maps to that cell's index.
-        col = int(math.floor(east_m / self.cell_size_m))
-        row = int(math.floor(north_m / self.cell_size_m))
-        return row, col
+        return self.local_m_to_cell(east_m, north_m)
 
     def cell_to_latlon(self, row: int, col: int) -> Tuple[float, float]:
         """

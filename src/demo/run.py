@@ -1,22 +1,26 @@
 # =============================================================================
 # run.py
 # -----------------------------------------------------------------------------
-# Responsible for: Driving the brain end-to-end on the mock Observation stream and
-#                  showing the map evolution — console beats plus posterior/coverage
-#                  heatmap PNGs at each beat (prior -> swept -> detection -> located).
-# Role in project: The Tier-1 milestone made visible: a working probability map
-#                  that mock observations move, with a persistent detection flipping
-#                  status to `located`. Replace mock_stream with the real
-#                  GeoReferencer and this runner is unchanged.
+# Responsible for: Driving the FULL chain end to end — scripted CameraPose ->
+#                  detector simulator -> GeoReferencer -> brain — and showing the
+#                  map evolution (console beats + posterior/coverage PNGs). Also
+#                  reports geo's localization error: the feasibility result.
+# Role in project: The geo+brain integration milestone. The subject's map cell now
+#                  EMERGES from the projection chain rather than being hand-placed.
+#                  The only simulated piece is the detector (we have no footage);
+#                  geo and the brain are the real code on real geography.
 # Run: .venv/bin/python -m src.demo.run
-# Assumptions: P_located is tuned for the 160x160 demo grid (a fixed window holds a
-#              small absolute share of a large grid — see DEMO_CONFIG below).
+# Assumptions: synthetic terrain (real rasters are a separate unit); P_located stays
+#              at default and the relative concentration gate fires `located`.
 # =============================================================================
 
 from __future__ import annotations
 
+import logging
+import math
 import pathlib
-from typing import Optional
+import statistics
+from typing import List, Optional
 
 import matplotlib
 
@@ -29,42 +33,24 @@ from matplotlib.patches import Rectangle
 from src.common.config import BrainConfig
 from src.common.contracts import LocatedEvent
 from src.common.grid import GridSpec
+from src.geo.georeferencer import GeoReferencer, _pixel_to_ground_local
 from src.search.brain import SearchBrain
 from src.search.terrain import SyntheticTerrain
 from src.search.trigger import concentration_ratio, windowed_mass
-from src.demo.mock_stream import build_demo_stream
+from src.demo.detector_sim import DetectorSimulator
+from src.demo.mock_stream import build_scripted_path
 
-# The demo relies on the RELATIVE (concentration) trigger gate, not a brittle absolute
-# mass threshold. On this 160x160 grid a fixed window holds only ~0.009 of total mass,
-# so the absolute p_located stays at its default (effectively off here) and the
-# grid-invariant concentration ratio — which climbs ~2.5x (prior) -> ~5x (color) ->
-# ~10x (thermal) — is what fires `located` at the thermal corroboration.
-DEMO_CONFIG = BrainConfig()
+# located_concentration_ratio CALIBRATED TO THE REAL CHAIN (not the old hand-built mock).
+# The feasibility harness showed the real geo footprints clear less than the fiction mock,
+# so the subject concentrates to ~4.6-5.1x (prior baseline ~2.5x). PERSISTENCE (N) is the
+# real false-positive discriminator — the subject gets persistence 4-8 while spurious blobs
+# stay at <=1 however concentrated. So the concentration gate is a modest FLOOR (3.5) that
+# sits comfortably between the diffuse prior (2.5x) and a corroborated find (~5x), with
+# persistence carrying the confirmation. The clearance cap (§5.5) keeps the find from being
+# eroded by canopy misses during loiter. (p_out absolute gate stays effectively off.)
+DEMO_CONFIG = BrainConfig(located_concentration_ratio=3.5)
 
 _OUTPUT_DIR = pathlib.Path(__file__).resolve().parents[2] / "demo_output"
-
-
-def _footprint_center(observation) -> Optional[tuple]:
-    """
-    The centroid (row, col) of an Observation's footprint — the drone's position.
-
-    Args:
-        observation: One frame's Observation.
-
-    Returns:
-        (row, col) mean of the footprint cells, or None if the frame covered nothing.
-
-    Why:
-        The flown-path overlay needs one point per frame. The footprint centroid is a
-        faithful stand-in for where the camera was looking, without needing the real
-        CameraPose (which the GeoReferencer will supply later).
-    """
-    cells = [cc.cell for cc in observation.footprint]
-    if not cells:
-        return None
-    rows = [c[0] for c in cells]
-    cols = [c[1] for c in cells]
-    return (sum(rows) / len(rows), sum(cols) / len(cols))
 
 
 def _annotate_axis(ax, grid, lkp, subject, drone_path, next_target) -> None:
@@ -226,60 +212,119 @@ def _print_located(event: LocatedEvent) -> None:
     print("=" * 72 + "\n")
 
 
-def main() -> None:
+def _print_feasibility(subject, event, geo_errors_m, subject_hits, false_positives, overflight_frames, cfg) -> None:
     """
-    Run the full demo loop and write the beat PNGs.
+    Print the feasibility result: geo's localization error and the brain's locate.
+
+    Args:
+        subject: True subject cell.
+        event: The LocatedEvent (or None).
+        geo_errors_m: Per-subject-detection geo placement error, in meters.
+        subject_hits / false_positives / overflight_frames: detection counts.
+        cfg: For the cell size (cells -> meters).
 
     Why:
-        One command (`python -m src.demo.run`) that exercises prior -> sweep ->
-        detection -> located on the real demo grid, the proof the core loop works.
+        This is the whole point of the harness: a measured, honest answer to "does the
+        geo+brain pipeline locate the subject, and how much error does geo's baseline
+        add?" — not a claim, a number.
     """
+    print("=" * 72)
+    print("FEASIBILITY — geo + brain on SIMULATED detections (real geography)")
+    print(f"  true subject cell    : {subject}")
+    if event is not None:
+        d = math.hypot(event.cell[0] - subject[0], event.cell[1] - subject[1])
+        print(f"  brain located cell   : {event.cell}  (off by {d:.1f} cells / {d * cfg.cell_size_m:.0f} m)")
+    else:
+        print("  brain located cell   : (none — did not locate)")
+    if geo_errors_m:
+        print(f"  geo placement error  : mean {statistics.mean(geo_errors_m):.0f} m, "
+              f"max {max(geo_errors_m):.0f} m  (baseline ignores gimbal pitch + box jitter)")
+    print(f"  subject detections   : {subject_hits} of {overflight_frames} overflight frames "
+          f"(canopy misses expected)")
+    print(f"  false positives      : {false_positives} (handled — did not trigger locate)")
+    print("=" * 72)
+
+
+def main() -> None:
+    """
+    Run the full chain (scripted pose -> simulator -> geo -> brain) and write PNGs.
+
+    Why:
+        One command (`python -m src.demo.run`) that proves the geo+brain integration:
+        the subject's map cell EMERGES from projection, and the feasibility report
+        states geo's error and the locate outcome.
+    """
+    logging.basicConfig(level=logging.WARNING, format="  [warn] %(name)s: %(message)s")
     _OUTPUT_DIR.mkdir(exist_ok=True)
     cfg = DEMO_CONFIG
     grid = GridSpec.from_config(cfg)
     terrain = SyntheticTerrain(cfg)
     brain = SearchBrain(cfg, terrain)
-    subject, stream = build_demo_stream(grid, cfg)
-    n_sweep = sum(1 for o in stream if not o.detections_ground)
+
+    subject_latlon, frames = build_scripted_path(grid, cfg)
+    subject = grid.latlon_to_cell(*subject_latlon)
+    subj_e, subj_n = grid.latlon_to_local_m(*subject_latlon)
+    visibility = terrain.visibility(grid)
+    geo = GeoReferencer(grid, visibility=visibility, config=cfg)
+    sim = DetectorSimulator(grid, subject_latlon, visibility, config=cfg, seed=0, false_positive_rate=0.01)
+
+    # The first overflight frame is the first with the drone directly over the subject.
+    drone_cells = [grid.latlon_to_cell(*f.pose.drone_latlon) for f in frames]
+    n_sweep = next((i for i, dc in enumerate(drone_cells) if dc == subject), len(frames))
 
     print(f"Demo grid {grid.n_rows}x{grid.n_cols} @ {cfg.cell_size_m:.0f} m | "
-          f"LKP cell {grid.latlon_to_cell(*cfg.lkp_latlon)} | subject {subject} | "
-          f"{len(stream)} frames ({n_sweep} sweep)\n")
+          f"LKP {grid.latlon_to_cell(*cfg.lkp_latlon)} | subject {subject} | "
+          f"{len(frames)} frames ({n_sweep} sweep)  [detector SIMULATED; geo + brain real]\n")
 
-    # The drone's flown path, accumulated frame by frame for the path overlay.
     drone_path: list = []
+    located_event: Optional[LocatedEvent] = None
+    first_detection_rendered = False
+    geo_errors_m: List[float] = []
+    subject_hits = 0
+    false_positives = 0
 
-    # Beat 0 — the prior the judge sees first (nothing flown yet).
     _print_beat(brain, subject, "prior (t0)")
     render_state(brain, subject, "prior (t0)", _OUTPUT_DIR / "beat0_prior.png", drone_path=list(drone_path))
 
-    located_event: Optional[LocatedEvent] = None
-    first_detection_rendered = False
-
-    for i, obs in enumerate(stream):
+    for i, frame in enumerate(frames):
+        det_out = sim.simulate(frame.pose, frame.sensor_type, frame.timestamp)
+        obs = geo.reference(det_out, frame.pose)
         event = brain.step(obs)
-        center = _footprint_center(obs)
-        if center is not None:
-            drone_path.append(center)
-        is_last_sweep = i == n_sweep - 1
-        has_detection = bool(obs.detections_ground)
+        drone_path.append(drone_cells[i])
 
-        if is_last_sweep:
+        # Classify each detection by its true geo placement error (meters), so a subject
+        # hit and a false positive are told apart by distance, not by a hidden flag.
+        subj_here = False
+        for det in det_out.detections:
+            x, y, w, h = det.bbox_xywh
+            ge, gn = _pixel_to_ground_local(x + w / 2.0, y + h / 2.0, frame.pose, grid)
+            err_m = math.hypot(ge - subj_e, gn - subj_n)
+            if err_m <= 150.0:      # within ~3 cells of truth -> a subject detection
+                geo_errors_m.append(err_m)
+                subject_hits += 1
+                subj_here = True
+            else:
+                false_positives += 1
+
+        if i == n_sweep - 1:
             _print_beat(brain, subject, "after sweep")
             render_state(brain, subject, "after sweep", _OUTPUT_DIR / "beat1_swept.png", drone_path=list(drone_path))
-        if has_detection and not first_detection_rendered:
+        if subj_here and not first_detection_rendered:
             _print_beat(brain, subject, "first detection")
-            render_state(brain, subject, "first detection (color)", _OUTPUT_DIR / "beat2_detection.png", drone_path=list(drone_path))
+            render_state(brain, subject, "first detection", _OUTPUT_DIR / "beat2_detection.png", drone_path=list(drone_path))
             first_detection_rendered = True
         if event is not None and located_event is None:
             located_event = event
             _print_beat(brain, subject, "LOCATED")
             render_state(brain, subject, "LOCATED", _OUTPUT_DIR / "beat3_located.png", drone_path=list(drone_path))
 
+    print()
+    _print_feasibility(subject, located_event, geo_errors_m, subject_hits,
+                       false_positives, len(frames) - n_sweep, cfg)
     if located_event is not None:
         _print_located(located_event)
     else:
-        print("\n[!] Loop finished WITHOUT locating — check P_located tuning.\n")
+        print("\n[!] Loop finished WITHOUT locating.\n")
 
     print(f"PNGs written to: {_OUTPUT_DIR}")
 

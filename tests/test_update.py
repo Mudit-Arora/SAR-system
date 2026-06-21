@@ -105,7 +105,7 @@ def test_nondetection_lowers_covered_and_raises_pout(cfg, grid):
     """
     n = cfg.n_rows * cfg.n_cols
     posterior = np.full((cfg.n_rows, cfg.n_cols), (1.0 - 0.07) / n)
-    coverage = np.zeros((cfg.n_rows, cfg.n_cols))
+    cleared = np.zeros((cfg.n_rows, cfg.n_cols))
     p_out = 0.07
 
     covered = [(5, 5), (5, 6), (4, 5)]
@@ -113,45 +113,62 @@ def test_nondetection_lowers_covered_and_raises_pout(cfg, grid):
     p_before_covered = posterior[5, 5]
     p_before_other = posterior[0, 0]
 
-    apply_coverage_and_nondetection(posterior, coverage, footprint, recall=0.8, exclude_cells=set(), grid=grid)
+    apply_coverage_and_nondetection(posterior, cleared, footprint, recall=0.8,
+                                    exclude_cells=set(), grid=grid, clearance_cap=1.0)
     posterior, p_out = renormalize(posterior, p_out)
 
     assert posterior[5, 5] < p_before_covered          # covered cell dropped
     assert posterior[0, 0] > p_before_other            # untouched cell rose
     assert p_out > 0.07                                 # 'they left' became likelier
     assert posterior.sum() + p_out == pytest.approx(1.0)   # mass conserved
-    # coverage accrued exactly d_i on the first look (1*1*0.8)
-    assert coverage[5, 5] == pytest.approx(0.8)
+    # clearance accrued exactly d_i on the first look (1*1*0.8), under a non-binding cap
+    assert cleared[5, 5] == pytest.approx(0.8)
 
 
-def test_coverage_compounds_over_repeated_looks(cfg, grid):
+def test_clearance_compounds_over_repeated_looks(cfg, grid):
     """
-    Scenario: the same cell looked at twice with d_i = 0.5 each.
+    Scenario: the same cell looked at twice with d_i = 0.5 each, cap not binding.
     Why it matters: cleared_i = 1 - Prod(1 - d_i) — two 0.5 looks give 0.75, not 1.0;
     repeated weak looks must not falsely report a cell as fully cleared.
     """
     posterior = np.full((cfg.n_rows, cfg.n_cols), 0.01)
-    coverage = np.zeros((cfg.n_rows, cfg.n_cols))
+    cleared = np.zeros((cfg.n_rows, cfg.n_cols))
     fp = [CellCoverage(cell=(5, 5), coverage_fraction=1.0, visibility_weight=1.0)]
-    # recall 0.5 -> d_i = 0.5 per look
-    apply_coverage_and_nondetection(posterior, coverage, fp, recall=0.5, exclude_cells=set(), grid=grid)
-    apply_coverage_and_nondetection(posterior, coverage, fp, recall=0.5, exclude_cells=set(), grid=grid)
-    assert coverage[5, 5] == pytest.approx(0.75)
+    # recall 0.5 -> d_i = 0.5 per look; cap 1.0 so it doesn't bind here
+    apply_coverage_and_nondetection(posterior, cleared, fp, recall=0.5, exclude_cells=set(), grid=grid, clearance_cap=1.0)
+    apply_coverage_and_nondetection(posterior, cleared, fp, recall=0.5, exclude_cells=set(), grid=grid, clearance_cap=1.0)
+    assert cleared[5, 5] == pytest.approx(0.75)
 
 
-def test_detection_cell_accrues_coverage_but_is_not_cleared(cfg, grid):
+def test_clearance_capped_per_sensor(cfg, grid):
+    """
+    Scenario: two strong looks (d_i = 0.5 each) at one cell with a cap of 0.6.
+    Why it matters: the §5.5 cap — correlated looks from one sensor can't clear past the
+    cap. Uncapped, two 0.5 looks would clear 0.75 (posterior x0.25); capped at 0.6 the
+    posterior may only fall to x0.4, so a loitering sensor can't erase a real signal.
+    """
+    posterior = np.full((cfg.n_rows, cfg.n_cols), 1.0)
+    cleared = np.zeros((cfg.n_rows, cfg.n_cols))
+    fp = [CellCoverage(cell=(5, 5), coverage_fraction=1.0, visibility_weight=1.0)]
+    apply_coverage_and_nondetection(posterior, cleared, fp, recall=0.5, exclude_cells=set(), grid=grid, clearance_cap=0.6)
+    apply_coverage_and_nondetection(posterior, cleared, fp, recall=0.5, exclude_cells=set(), grid=grid, clearance_cap=0.6)
+    assert cleared[5, 5] == pytest.approx(0.6)               # cumulative clearance capped
+    assert posterior[5, 5] == pytest.approx(0.4)             # posterior factor == 1 - cap
+
+
+def test_detection_cell_is_neither_cleared_nor_accrued(cfg, grid):
     """
     Scenario: a covered cell that also holds a detection (in exclude_cells).
-    Why it matters: a cell with a detection was still *looked at* (coverage rises),
-    but 'saw nothing there' is false, so its probability must NOT be cleared.
+    Why it matters: a detection landed here, so 'saw nothing' is false — the cell must
+    NOT be cleared, and it must NOT accrue clearance (it isn't ruled out).
     """
     posterior = np.full((cfg.n_rows, cfg.n_cols), 0.01)
-    coverage = np.zeros((cfg.n_rows, cfg.n_cols))
+    cleared = np.zeros((cfg.n_rows, cfg.n_cols))
     fp = [CellCoverage(cell=(5, 5), coverage_fraction=1.0, visibility_weight=1.0)]
     before = posterior[5, 5]
-    apply_coverage_and_nondetection(posterior, coverage, fp, recall=0.8, exclude_cells={(5, 5)}, grid=grid)
+    apply_coverage_and_nondetection(posterior, cleared, fp, recall=0.8, exclude_cells={(5, 5)}, grid=grid, clearance_cap=0.6)
     assert posterior[5, 5] == before          # not cleared
-    assert coverage[5, 5] == pytest.approx(0.8)  # but coverage still accrued
+    assert cleared[5, 5] == 0.0               # and not accrued (a detection isn't a clear)
 
 
 # --- detection boost sharpens the peak without lowering neighbors ---
@@ -196,10 +213,10 @@ def test_full_frame_conserves_mass(cfg, grid):
     """
     n = cfg.n_rows * cfg.n_cols
     posterior = np.full((cfg.n_rows, cfg.n_cols), (1.0 - 0.07) / n)
-    coverage = np.zeros((cfg.n_rows, cfg.n_cols))
+    cleared = np.zeros((cfg.n_rows, cfg.n_cols))
     p_out = 0.07
     fp = [CellCoverage(cell=(3, 3), coverage_fraction=0.8, visibility_weight=0.5)]
-    apply_coverage_and_nondetection(posterior, coverage, fp, recall=0.6, exclude_cells={(5, 5)}, grid=grid)
+    apply_coverage_and_nondetection(posterior, cleared, fp, recall=0.6, exclude_cells={(5, 5)}, grid=grid, clearance_cap=0.9)
     apply_detection_boost(posterior, center_cell=(5, 5), effective_lr=5.0, grid=grid, cfg=cfg)
     posterior, p_out = renormalize(posterior, p_out)
     assert posterior.sum() + p_out == pytest.approx(1.0)

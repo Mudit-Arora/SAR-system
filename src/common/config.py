@@ -45,6 +45,16 @@ class BrainConfig:
     # --- Incident / scenario (docs/demo_scenario.md §2) ---
     lkp_latlon: Tuple[float, float] = (37.905, -122.605)  # Pantoll trailhead
 
+    # --- Non-detection clearing cap (interfaces §5.5: correlated looks) ---
+    # Repeated passes from the SAME sensor over the same canopy/angle miss IDENTICALLY,
+    # so the independent-looks product 1-Π(1-d_i) overstates how much one sensor can rule
+    # out. Cap each sensor's CUMULATIVE clearance per cell: correlated looks can clear a
+    # cell by at most this fraction. Different sensors clear independently (thermal sees
+    # through canopy color can't), so the combined clearance can still exceed this.
+    # Found necessary by the geo+brain feasibility test (loiter + canopy misses were
+    # eroding the located subject); see docs/brain_followups.md A1.
+    clearance_cap_per_sensor: float = 0.6
+
     # --- Prior construction (docs/prior_model.md §2-§3) ---
     prior_sigma_m: float = 2600.0        # half-normal sigma; Koester Hiker, Mtn/Temperate
     corridor_k: float = 3.0              # max corridor attraction C in [1, k]
@@ -56,6 +66,11 @@ class BrainConfig:
     # at dusk (the scenario's motivation). Stored as a tuple of pairs so the frozen
     # dataclass stays hashable; read via recall_for() in update.py.
     recall_by_sensor: Tuple[Tuple[str, float], ...] = (("color", 0.6), ("thermal", 0.8))
+
+    # Sensor modulation of visibility (used by the GeoReferencer): thermal sees a person
+    # better under canopy / low light, so it lifts the terrain's base visibility. Stored
+    # as pairs (frozen-friendly); read via visibility_factor_for(). Clamped to [0,1] after.
+    visibility_sensor_factor: Tuple[Tuple[str, float], ...] = (("color", 1.0), ("thermal", 1.4))
 
     # --- Detection update: clipped, bucketed likelihood ratio (interfaces §5.3) ---
     lr_max: float = 20.0
@@ -108,6 +123,25 @@ class BrainConfig:
         """
         table = dict(self.recall_by_sensor)
         return table.get(sensor_type, table.get("color", 0.6))
+
+    def visibility_factor_for(self, sensor_type: str) -> float:
+        """
+        Look up the sensor's visibility multiplier (thermal helps under canopy).
+
+        Args:
+            sensor_type: "color" or "thermal".
+
+        Returns:
+            A multiplier applied to the terrain's base visibility; falls back to 1.0
+            (color, no change) for an unknown sensor.
+
+        Why:
+            The GeoReferencer sets visibility_weight = base_visibility * this factor.
+            Keeping the factor in config (not geo) means the sensor's advantage is a
+            live-tunable, and geo stays pure geometry + a table lookup.
+        """
+        table = dict(self.visibility_sensor_factor)
+        return table.get(sensor_type, 1.0)
 
 
 # A module-level default instance for callers that don't thread a config through.

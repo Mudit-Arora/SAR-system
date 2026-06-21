@@ -35,6 +35,9 @@ from src.common.grid import GridSpec
 _DRAINAGE_WIDTH_CELLS = 1.6     # perpendicular falloff of the corridor boost
 _RIDGE_HALF_WIDTH_CELLS = 2.5   # how wide the low-accessibility ridge band is
 _RIDGE_CORE_CELLS = 0.8         # cells this close to the ridge crest are impassable (A=0)
+_CANOPY_WIDTH_CELLS = 6.0       # width of the forested canyon band around the drainage
+_CANOPY_MIN_VISIBILITY = 0.40   # visibility deep under canopy (forested canyon floor)
+_OPEN_VISIBILITY = 0.90         # visibility in open coastal scrub / grass
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,10 @@ class TerrainProvider(Protocol):
 
     def layers(self, grid: GridSpec) -> TerrainLayers:
         """Return the accessibility and corridor layers over the grid."""
+        ...
+
+    def visibility(self, grid: GridSpec) -> np.ndarray:
+        """Return per-cell base visibility in [0, 1] (canopy lowers it)."""
         ...
 
     def context(self, grid: GridSpec, cell: Tuple[int, int]) -> Dict[str, Any]:
@@ -204,6 +211,31 @@ class SyntheticTerrain:
         accessibility[d_ridge <= _RIDGE_CORE_CELLS] = 0.0
 
         return TerrainLayers(accessibility=accessibility, corridor=corridor)
+
+    def visibility(self, grid: GridSpec) -> np.ndarray:
+        """
+        Per-cell base visibility in [0, 1]: low in the forested canyon, high in the open.
+
+        Args:
+            grid: The shared GridSpec.
+
+        Returns:
+            (n_rows, n_cols) array of base (daylight, color) visibility.
+
+        Why:
+            The drainage is the Steep Ravine — a Doug-fir/redwood canyon — so a band
+            around it is forested (canopy hides a person from above), while the coastal
+            ridge/scrub is open. This is what makes the demo's tension real: the subject
+            sits in HIGH-prior but LOW-visibility forest, so the search needs repeated
+            looks and the thermal pass (which lifts visibility — modulated in geo). It is
+            independent of accessibility (a steep open cliff is very visible; flat dense
+            forest is not), which is why visibility is its own layer.
+        """
+        drainage, _ = self._feature_polylines(grid)
+        d_drain = _distance_to_polyline_cells(grid.n_rows, grid.n_cols, drainage)
+        # canopy in [0, 1]: 1 over the drainage, decaying outward over the canyon band.
+        canopy = np.exp(-(d_drain / _CANOPY_WIDTH_CELLS) ** 2)
+        return _OPEN_VISIBILITY - (_OPEN_VISIBILITY - _CANOPY_MIN_VISIBILITY) * canopy
 
     def context(self, grid: GridSpec, cell: Tuple[int, int]) -> Dict[str, Any]:
         """

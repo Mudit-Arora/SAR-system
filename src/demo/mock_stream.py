@@ -1,35 +1,64 @@
 # =============================================================================
 # mock_stream.py
 # -----------------------------------------------------------------------------
-# Responsible for: A scripted, deterministic Observation stream standing in for
-#                  the real GeoReferencer — a SW sweep of clean non-detections
-#                  down the corridor, then color detections on the subject cell,
-#                  then a thermal corroboration (docs/demo_scenario.md §5 & §7).
-# Role in project: Lets the brain run the full loop today. When the real
-#                  GeoReferencer exists, it produces the same Observation contract
-#                  and this module is simply unplugged.
-# Assumptions: Subject is ~1.8 km SW of the LKP, near the drainage (demo §4). All
-#              cells are placed relative to the LKP cell so the stream tracks the
-#              grid, not hard-coded indices.
+# Responsible for: The scripted FLIGHT PATH for the demo — an ordered list of
+#                  CameraPose frames (a SW lawnmower sweep, then an overflight of
+#                  the subject), plus the planted ground-truth subject location.
+# Role in project: Drives the real chain now: scripted pose -> detector simulator
+#                  (detector_sim.py) -> GeoReferencer -> brain. Replaces the old
+#                  direct-Observation mock; the subject's map cell now EMERGES from
+#                  the projection instead of being hand-placed. When the real
+#                  GeoReferencer/detector exist, this scripted path is the same
+#                  CameraPose feed a real flight would provide.
+# Assumptions: Near-nadir gimbal; sweep frames are positioned so the subject is NOT
+#              in their footprint (clean non-detections); overflight frames sit over
+#              the subject so it falls in frame.
 # =============================================================================
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import List, Tuple
 
 from src.common.config import BrainConfig
-from src.common.contracts import (
-    CellCoverage,
-    GroundDetection,
-    Observation,
-    SensorType,
-)
+from src.common.contracts import CameraPose, SensorType
 from src.common.grid import GridSpec
 
-# Cells SW of the LKP to the subject: ~1.8 km / 50 m ≈ 36 cells along the diagonal.
-_SUBJECT_OFFSET_ROWS = -26  # south of the LKP
-_SUBJECT_OFFSET_COLS = -23  # west of the LKP
-_FRAME_DT_S = 9.0           # sim seconds between frames
+# Subject ~1.8 km SW of the LKP (demo_scenario §4): moderate prior, partial canopy.
+_SUBJECT_OFFSET_ROWS = -26
+_SUBJECT_OFFSET_COLS = -23
+_FRAME_DT_S = 9.0
+
+# Camera/flight constants (plausible drone parameters).
+_FOV_DEG = (70.0, 40.0)
+_IMAGE_PX = (1920, 1080)
+_SWEEP_ALT_M = 140.0      # higher sweep => larger footprint => clears the corridor more
+_SUBJECT_ALT_M = 90.0     # descend over the subject for detail
+_SWEEP_PITCH = -88.0      # near nadir
+_COLOR_PITCH = -80.0      # slightly oblique over the subject (exposes geo's baseline error)
+_THERMAL_PITCH = -75.0
+_COLOR_FRAMES = 6         # loiter long enough that canopy misses still leave >= N detections
+_THERMAL_FRAMES = 4
+
+
+@dataclass(frozen=True)
+class ScriptedFrame:
+    """
+    One frame of the scripted flight: telemetry + which sensor mode + sim clock time.
+
+    Args (fields):
+        pose: The CameraPose (telemetry) for this frame.
+        sensor_type: COLOR or THERMAL (the camera mode this frame).
+        timestamp: Sim-clock time, carried onto the DetectorOutput/Observation.
+
+    Why:
+        CameraPose (interfaces §3) carries no timestamp or sensor mode; the demo needs
+        both per frame, so this small record pairs them without bending the contract.
+    """
+
+    pose: CameraPose
+    sensor_type: SensorType
+    timestamp: float
 
 
 def subject_cell(grid: GridSpec, cfg: BrainConfig) -> Tuple[int, int]:
@@ -41,124 +70,95 @@ def subject_cell(grid: GridSpec, cfg: BrainConfig) -> Tuple[int, int]:
         cfg: Brain config (for the LKP).
 
     Returns:
-        (row, col) of the planted subject.
+        (row, col) of the planted subject (ground truth).
 
     Why:
-        Chosen (per demo §4) so the prior gives this area MODERATE — not top —
-        probability: the update has to do real work to lock on, which is what makes
-        the demo's map evolution meaningful rather than trivial.
+        Placed (per demo §4) where the prior is MODERATE and the canopy partial, so the
+        update must do real work and the thermal pass earns its corroboration.
     """
     lkp_r, lkp_c = grid.latlon_to_cell(*cfg.lkp_latlon)
     return (lkp_r + _SUBJECT_OFFSET_ROWS, lkp_c + _SUBJECT_OFFSET_COLS)
 
 
-def _footprint(grid: GridSpec, center: Tuple[int, int], visibility: float, half: int = 1) -> List[CellCoverage]:
+def _pose(grid: GridSpec, cell, frame_id, heading, alt, pitch) -> CameraPose:
+    """A CameraPose whose nadir (drone position) is the center of `cell`."""
+    lat, lon = grid.cell_to_latlon(*cell)
+    return CameraPose(
+        frame_id=frame_id,
+        drone_latlon=(lat, lon),
+        altitude_agl_m=alt,
+        heading_deg=heading,
+        gimbal_pitch_deg=pitch,
+        fov_deg=_FOV_DEG,
+        image_size_px=_IMAGE_PX,
+    )
+
+
+def build_scripted_path(grid: GridSpec, cfg: BrainConfig) -> Tuple[Tuple[float, float], List[ScriptedFrame]]:
     """
-    A square footprint of fully-covered cells around a center.
-
-    Args:
-        grid: GridSpec, for bounds.
-        center: (row, col) center of the look.
-        visibility: visibility_weight for every cell in this look (canopy lowers it).
-        half: half-width; half=1 gives a 3x3 footprint (~6 cells at this altitude).
-
-    Returns:
-        A list of CellCoverage, clipped to the grid.
-
-    Why:
-        A ~3x3 ground footprint at 100 m / 70° FOV over a 50 m grid (demo §5.2) is the
-        right amount of overlap for coverage to accumulate smoothly across the sweep.
-    """
-    cells: List[CellCoverage] = []
-    r0, c0 = center
-    for dr in range(-half, half + 1):
-        for dc in range(-half, half + 1):
-            cell = (r0 + dr, c0 + dc)
-            if grid.in_bounds(*cell):
-                cells.append(CellCoverage(cell=cell, coverage_fraction=1.0, visibility_weight=visibility))
-    return cells
-
-
-def build_demo_stream(grid: GridSpec, cfg: BrainConfig) -> Tuple[Tuple[int, int], List[Observation]]:
-    """
-    Build the scripted Observation sequence for the demo.
+    Build the scripted flight path and the planted subject location.
 
     Args:
         grid: The shared GridSpec.
-        cfg: Brain config (LKP, sensor types).
+        cfg: Brain config (LKP).
 
     Returns:
-        (subject, observations): the planted subject cell and the ordered frames —
-        a clean SW sweep, then 3 color detections, then 2 thermal corroborations.
+        (subject_latlon, frames): the ground-truth subject position and the ordered
+        ScriptedFrames — a SW lawnmower sweep (clean), then a subject overflight
+        (color, then thermal).
 
     Why:
-        Mirrors demo §7's detection/non-detection sequence: the sweep dims the
-        high-prior corridor (coverage rises, mass redistributes), color hits brighten
-        the subject but stay `searching` (persistence not met), and the thermal pass
-        meets persistence AND crosses P_located → `located`.
+        The path is map-directed: sweep the high-prior corridor (clearing it via clean
+        non-detections), then loiter over the subject's slope. The detector simulator
+        decides per frame whether the subject is in view, so detections EMERGE from the
+        geometry rather than being scripted.
     """
     lkp_r, lkp_c = grid.latlon_to_cell(*cfg.lkp_latlon)
     subject = subject_cell(grid, cfg)
+    subject_latlon = grid.cell_to_latlon(*subject)
 
-    observations: List[Observation] = []
+    frames: List[ScriptedFrame] = []
     t = 0.0
     frame_no = 1
 
-    # --- Sweep: a boustrophedon ("lawnmower") over the high-prior corridor band ---
-    # The band spans from just SW of the LKP (over the prior peak) down toward — but
-    # stopping SHORT of — the subject, so the subject stays an unsearched surprise.
-    # 5x5 footprints stepping by 4-5 cells give full, overlapping coverage of the band.
+    # --- Sweep: a boustrophedon over the high-prior corridor band, short of the subject ---
     row_top = lkp_r + 2
     row_bottom = subject[0] + 6        # stay clear of the subject's neighborhood
     col_left = subject[1] - 2
     col_right = lkp_c + 4
-    row_centers = list(range(row_top, row_bottom - 1, -4))   # marching south
     serpentine = True
-    for row_c in row_centers:
+    for row_c in range(row_top, row_bottom - 1, -4):
         cols = list(range(col_left, col_right + 1, 5))
+        heading = 90.0 if serpentine else 270.0   # east-going vs west-going pass
         if not serpentine:
-            cols = cols[::-1]            # reverse alternate passes (the lawnmower turn)
+            cols = cols[::-1]
         serpentine = not serpentine
         for col_c in cols:
-            footprint = _footprint(grid, (row_c, col_c), visibility=0.7, half=2)
-            observations.append(
-                Observation(
-                    frame_id=f"F{frame_no:04d}",
-                    timestamp=t,
-                    footprint=footprint,
-                    detections_ground=[],   # clean look -> non-detection (clears area)
-                    sensor_type=SensorType.COLOR,
-                )
-            )
+            frames.append(ScriptedFrame(
+                pose=_pose(grid, (row_c, col_c), f"F{frame_no:04d}", heading, _SWEEP_ALT_M, _SWEEP_PITCH),
+                sensor_type=SensorType.COLOR,
+                timestamp=t,
+            ))
             frame_no += 1
             t += _FRAME_DT_S
 
-    # --- Detections on the subject: color first (partial canopy), conf ~0.6 ---
-    for conf in (0.62, 0.60, 0.64):
-        observations.append(
-            Observation(
-                frame_id=f"F{frame_no:04d}",
-                timestamp=t,
-                footprint=[CellCoverage(cell=subject, coverage_fraction=1.0, visibility_weight=0.6)],
-                detections_ground=[GroundDetection(cell=subject, confidence=conf)],
-                sensor_type=SensorType.COLOR,
-            )
-        )
+    # --- Overflight: loiter over the subject. Color first, then a thermal pass. ---
+    heading_down_canyon = 225.0  # SW, following the drainage
+    for _ in range(_COLOR_FRAMES):    # color frames (partial canopy -> some misses expected)
+        frames.append(ScriptedFrame(
+            pose=_pose(grid, subject, f"F{frame_no:04d}", heading_down_canyon, _SUBJECT_ALT_M, _COLOR_PITCH),
+            sensor_type=SensorType.COLOR,
+            timestamp=t,
+        ))
+        frame_no += 1
+        t += _FRAME_DT_S
+    for _ in range(_THERMAL_FRAMES):  # thermal corroboration (sees better under canopy)
+        frames.append(ScriptedFrame(
+            pose=_pose(grid, subject, f"F{frame_no:04d}", heading_down_canyon, _SUBJECT_ALT_M, _THERMAL_PITCH),
+            sensor_type=SensorType.THERMAL,
+            timestamp=t,
+        ))
         frame_no += 1
         t += _FRAME_DT_S
 
-    # --- Thermal corroboration: stronger evidence (conf ~0.85+) under low light ---
-    for conf in (0.85, 0.88):
-        observations.append(
-            Observation(
-                frame_id=f"F{frame_no:04d}",
-                timestamp=t,
-                footprint=[CellCoverage(cell=subject, coverage_fraction=1.0, visibility_weight=0.85)],
-                detections_ground=[GroundDetection(cell=subject, confidence=conf)],
-                sensor_type=SensorType.THERMAL,
-            )
-        )
-        frame_no += 1
-        t += _FRAME_DT_S
-
-    return subject, observations
+    return subject_latlon, frames
