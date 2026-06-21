@@ -64,11 +64,18 @@ class ProjectionContext:
         located_cell: The located subject cell once declared (marks the primary detection).
             None while still searching.
         mission_name / region / started_at: Cosmetic mission metadata shown in the header.
+        guidance_path: The walkable route home (cells, subject -> operators) during the
+            guide-home phase. None while still searching.
+        subject_cell: The (moving) subject's current cell during guidance — the follower marker.
+        home_cell: The operators/home cell (the LKP). Shown as the home marker.
+        guidance_status: "searching" | "guiding" | "arrived" — drives the Guide Home ribbon step.
 
     Why:
         Keeping these in a context object (rather than stuffing them into MapState) preserves
         the brain's read-model as purely the belief state, and keeps this projection a pure
-        function of (snapshot, context) — trivially testable without a running server.
+        function of (snapshot, context) — trivially testable without a running server. The
+        guidance fields are the additive seam for the drone-as-guide phase (all None/searching
+        until the server enters guidance, so existing consumers are unaffected).
     """
 
     drone_path: List[Cell] = field(default_factory=list)
@@ -78,6 +85,10 @@ class ProjectionContext:
     mission_name: str = "Lost Hiker — Marin"
     region: str = "Mt. Tamalpais, Marin CA"
     started_at: str = "—"
+    guidance_path: Optional[List[Cell]] = None
+    subject_cell: Optional[Cell] = None
+    home_cell: Optional[Cell] = None
+    guidance_status: str = "searching"
 
 
 # --- small formatting / geometry helpers (pure) ---
@@ -228,25 +239,36 @@ def _ui_detections(
     return rows
 
 
-def _loop_steps(map_state: MapState) -> List[Dict[str, Any]]:
+def _loop_steps(map_state: MapState, guidance_status: str = "searching") -> List[Dict[str, Any]]:
     """
-    Derive the six search-loop step states from the snapshot's status/update_count.
+    Derive the loop-ribbon step states from the snapshot's status + the guidance phase.
+
+    Args:
+        map_state: The brain snapshot (status/update_count).
+        guidance_status: "searching" | "guiding" | "arrived" — the guide-home phase.
 
     Why:
-        The loop ribbon tells the story (Build Prior -> ... -> Notify). We light it from real
-        state: the prior/plan are always done; detect/update/redirect are live mid-search and
-        done once located; notify lights up only at the locate moment. Honest, not scripted.
+        The loop ribbon tells the story (Build Prior -> ... -> Notify -> Guide Home). We light it
+        from real state: the prior/plan are always done; detect/update/redirect are live
+        mid-search and done once located; notify lights at the locate; Guide Home lights while
+        guiding and completes on arrival. Honest, not scripted.
     """
     located = map_state.status is Status.LOCATED
     updated = map_state.update_count > 0
+    guiding = guidance_status == "guiding"
+    arrived = guidance_status == "arrived"
     mid = "done" if located else ("live" if updated else "next")
+    # Notify fires at the locate; it's "done" once we've moved on to guiding/arrived.
+    notify = "done" if (located and (guiding or arrived)) else ("live" if located else "next")
+    guide = "done" if arrived else ("live" if guiding else "next")
     return [
         {"id": 1, "label": "Build Prior", "status": "done"},
         {"id": 2, "label": "Plan Search", "status": "done"},
         {"id": 3, "label": "Detect", "status": "done" if located else "live"},
         {"id": 4, "label": "Update Map", "status": mid},
         {"id": 5, "label": "Redirect", "status": mid},
-        {"id": 6, "label": "Notify", "status": "live" if located else "next"},
+        {"id": 6, "label": "Notify", "status": notify},
+        {"id": 7, "label": "Guide Home", "status": guide},
     ]
 
 
@@ -350,11 +372,16 @@ def project(map_state: MapState, context: Optional[ProjectionContext] = None) ->
 
     drone_pos = _cell_to_norm(ctx.drone_path[-1], grid) if ctx.drone_path else {"x": 0.5, "y": 0.5}
 
+    # Guide-home overlay (all None/"searching" until the server enters the guidance phase).
+    guidance_path = (
+        [_cell_to_norm(c, grid) for c in ctx.guidance_path] if ctx.guidance_path else None
+    )
+
     return {
         "missionName": ctx.mission_name,
         "region": ctx.region,
         "startedAt": ctx.started_at,
-        "loop": _loop_steps(map_state),
+        "loop": _loop_steps(map_state, ctx.guidance_status),
         "confidenceToDeclare": confidence,
         "declareThreshold": 100,  # gauge meets threshold exactly when the brain declares located
         "stats": {
@@ -373,4 +400,9 @@ def project(map_state: MapState, context: Optional[ProjectionContext] = None) ->
         "trend": [{"t": _fmt_hm(t), "mass": round(m)} for t, m in ctx.trend],
         "recentCommands": [],  # populated by the voice layer in Milestone 2
         "telemetry": _telemetry(map_state, ctx, cfg),
+        # --- guide-home overlay (additive; null/"searching" during the search phase) ---
+        "guidancePath": guidance_path,
+        "subjectPos": _cell_to_norm(ctx.subject_cell, grid) if ctx.subject_cell else None,
+        "operatorPos": _cell_to_norm(ctx.home_cell, grid) if ctx.home_cell else None,
+        "guidanceStatus": ctx.guidance_status,
     }

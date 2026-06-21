@@ -76,4 +76,11 @@ export interface MapState {
   trend: ProbabilityPoint[]
   recentCommands: OperatorCommand[]
   telemetry: { altM: number; spdMs: number; hdgDeg: number; feedTime: string }
+  // --- guide-home overlay (additive; null/'searching' during the search phase) ---
+  // The walkable route the drone leads the subject along, back to the operators.
+  guidancePath?: { x: number; y: number }[] | null
+  // The moving subject (follower) and the operators/home (where the drone leads them).
+  subjectPos?: { x: number; y: number } | null
+  operatorPos?: { x: number; y: number } | null
+  guidanceStatus?: 'searching' | 'guiding' | 'arrived'
 }

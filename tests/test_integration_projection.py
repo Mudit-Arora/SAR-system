@@ -133,6 +133,50 @@ def test_detection_rows_match_ui_shape():
         assert set(det["pos"].keys()) == {"x", "y"}
 
 
+def test_guidance_fields_default_to_searching():
+    """
+    Scenario: project with no guidance context (the search phase).
+    Why it matters: the guide-home fields are additive — during search they must be null/
+    "searching" so the dashboard's guidance overlay stays hidden and nothing else changes.
+    """
+    loop, _ = build_simulator_loop()
+    ui = project(loop.brain.map_state())  # default context
+    assert ui["guidancePath"] is None
+    assert ui["subjectPos"] is None
+    assert ui["operatorPos"] is None
+    assert ui["guidanceStatus"] == "searching"
+    # The Guide Home ribbon step exists and is not yet active.
+    guide_step = next(s for s in ui["loop"] if s["label"] == "Guide Home")
+    assert guide_step["status"] == "next"
+
+
+def test_guidance_fields_populate_during_guiding():
+    """
+    Scenario: project with a guidance context (route + subject + home, status "guiding").
+    Why it matters: when the server enters guidance, the dashboard needs the route, the moving
+    subject, and the operator marker — all normalized to [0,1] — plus a live Guide Home step.
+    """
+    loop, _ = build_simulator_loop()
+    final_state, _ = loop.run()
+    grid = final_state.grid_spec
+    route = [(10, 10), (12, 14), (15, 18)]
+    ctx = ProjectionContext(
+        drone_path=loop.drone_path,
+        guidance_path=route,
+        subject_cell=(11, 12),
+        home_cell=(15, 18),
+        guidance_status="guiding",
+    )
+    ui = project(final_state, ctx)
+
+    assert ui["guidanceStatus"] == "guiding"
+    assert len(ui["guidancePath"]) == len(route)
+    for pt in ui["guidancePath"] + [ui["subjectPos"], ui["operatorPos"]]:
+        assert 0.0 <= pt["x"] <= 1.0 and 0.0 <= pt["y"] <= 1.0
+    guide_step = next(s for s in ui["loop"] if s["label"] == "Guide Home")
+    assert guide_step["status"] == "live"
+
+
 def test_empty_context_renders_valid_state_at_t0():
     """
     Scenario: project the prior (t0) MapState with NO context (no path, no pose yet).
