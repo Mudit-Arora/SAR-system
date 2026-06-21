@@ -68,7 +68,7 @@ export default function App() {
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
             <ProbabilityTrend data={state.trend} now={state.confidenceToDeclare} />
             <MapUpdateSummary lastUpdate={state.telemetry.feedTime} />
-            <VoiceComms commands={state.recentCommands} />
+            <VoiceComms commands={state.recentCommands} broadcast={state.subjectBroadcast} />
           </div>
 
           {/* Live transcript from the deployed voice agent (real data) */}

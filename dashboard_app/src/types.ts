@@ -88,4 +88,13 @@ export interface MapState {
   subjectPos?: { x: number; y: number } | null
   operatorPos?: { x: number; y: number } | null
   guidanceStatus?: 'searching' | 'guiding' | 'arrived'
+  // --- voice: the spoken subject broadcast (null during search) ---
+  // texts: message per language; langs: all available; audioLangs: which have Deepgram audio
+  // (the rest fall back to the browser's TTS).
+  subjectBroadcast?: {
+    texts: Record<string, string>
+    langs: string[]
+    audioLangs: string[]
+    timestamp: string
+  } | null
 }
