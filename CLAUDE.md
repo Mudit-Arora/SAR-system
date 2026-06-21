@@ -17,6 +17,19 @@ contracts in `docs/interfaces.md`; protect the core loop above all else (see bel
 
 ---
 
+## Current state (brain/geo/terrain track — updated 2026-06-20)
+
+The **brain + GeoReferencer + terrain** track is **built, tested, and committed** (branch
+`brain`): the probability map (prior, Bayesian update, `located` trigger, single-writer
+`MapState`), the GeoReferencer (frame→ground projection + input hardening), real-raster terrain
+(DEM + WorldCover), a detector *simulator*, and the closed loop end-to-end. Run the demo with
+`python -m src.demo.run` and the suite with `pytest`. Still **teammates' tracks / not built in
+this repo**: the dashboard, the voice/broadcast, and the real YOLO11+SAHI detector. Next planned
+work is the real-terrain animated showcase — see **`docs/showcase-kickoff.md`**. Deferred items
+and honest limitations live in **`docs/brain_followups.md`**.
+
+---
+
 ## What we're building
 
 A drone-side perception + decision layer that helps search teams find missing people in
@@ -86,31 +99,32 @@ fidelity, transport) is expected to evolve.
 
 ---
 
-## Proposed directory layout — **ratify with the team Saturday, not yet created**
+## Directory layout
 
-The `src/` tree below is a **starting proposal only**. Literal file locations are a decision
-to make together when building begins — do not materialize this structure pre-event.
+The shared structure now **exists** (built for the brain/geo/terrain track). Actual layout:
 
 ```
-sar-system/
-├── docs/        SAR_project_plan.md, interfaces.md            [exists]
-├── data/        terrain/ detection/ footage/ behavior/ weights/ (gathered, git-ignored)  [exists]
-│
-│   # ── proposed; confirm before creating ──
+sar_hackathon/  (this repo)
+├── docs/        design docs: interfaces.md, prior_model.md, demo_scenario.md, build_plan.md,
+│                brain_followups.md, showcase-kickoff.md, ...                       [exists]
+├── data/        terrain/ + behavior/ present here; detection/footage/weights are gathered in
+│                the sibling ../sar_system/ prep dir (git-ignored)                  [exists]
 ├── src/
-│   ├── detection/   detector wrapper, pixel-space, swappable backend
-│   ├── geo/         GeoReferencer: frame→ground projection, grid math
-│   ├── search/      probability map + Bayesian update (the brain)
-│   ├── voice/       broadcast/ (subject) + operator/ (STT, intent, control)
-│   ├── pipeline/    loop wiring + orchestration (single-writer state)
-│   └── common/      shared types/contracts, GridSpec, config
-├── dashboard/   map UI, detections, alerts
-├── scratch/     experiments, including fine-tuning
-└── demo/        demo scripts + scenario config
+│   ├── common/    GridSpec, contracts (Observation/MapState/LocatedEvent/DetectorOutput/
+│   │              CameraPose), config                                             [built]
+│   ├── geo/       GeoReferencer: frame→ground projection + boundary defense       [built]
+│   ├── search/    prior, Bayesian update, located trigger, brain, terrain
+│   │              (synthetic stub + real raster)                                   [built]
+│   └── demo/      scripted flight path, detector simulator, run (loop wiring + PNGs) [built]
+└── tests/       unit + integration + soak tests (run with `pytest`)               [built]
+
+# ── teammates' tracks / not in this repo yet ──
+#   real detector (YOLO11+SAHI) · dashboard (Streamlit) · voice (broadcast + operator)
 ```
 
-`data/` subfolders are gathering buckets (see `docs/data.md` for provenance), adjustable,
-not a structural commitment.
+Notes: the loop wiring lives in `src/demo/run.py` (no separate `pipeline/`); the real detector,
+dashboard, and voice are teammates' tracks and not present here. `data/` subfolders are gathering
+buckets (see `docs/data.md` for provenance), adjustable, not a structural commitment.
 
 ---
 
