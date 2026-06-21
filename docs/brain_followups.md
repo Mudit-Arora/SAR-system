@@ -169,3 +169,35 @@ backdrop.
   (`GridSpec.cell_to_latlon` on the corners) and reprojecting the posterior overlay to match.
 - **Status:** optional polish — pick up only if spare time appears; the hillshade route is the
   committed one.
+
+---
+
+## Integration (Milestone 1) — honest limitations
+
+The teammates' tracks are wired into the brain core on the `integration` branch: the real YOLO
+detector (`integration/detector_adapter.py`), a source-agnostic loop (`integration/loop.py`), the
+`MapState → UI-MapState` projection (`integration/dashboard_projection.py`), a FastAPI server
+(`integration/server.py`), and the React dashboard polling live `/state` (`dashboard_app/`). The
+visible loop runs end-to-end and locates today. What is **deliberately approximate / not yet real**:
+
+- **The detection source is the SIMULATOR, not real footage (the big one).** No real RGB drone
+  footage with a visible person exists yet, and COCO-pretrained YOLO won't fire on synthetic
+  shapes, so the live demo runs on the geometry-driven `DetectorSimulator` (the `SimulatorBackend`).
+  The real `YoloBackend` is **built and unit-tested** (fakes + a smoke test on `yolo11n.pt`) but is
+  **not exercised end-to-end on real frames**. Swapping it in is a backend choice
+  (`build_yolo_loop(video, weights)`), not a rewrite — the seam is proven.
+- **Weights + modality are still the teammate's call.** No `best.pt`; thermal-vs-RGB undecided. The
+  pipeline is modality-agnostic (`sensor_type`/`model_id` are parameters); `best.pt` is a
+  `model_id`/weights swap.
+- **Scripted telemetry ⇒ geo placement is assumed, not measured.** Each frame is paired with a
+  scripted `CameraPose` (no GPS/IMU), so the ground projection is an approximation. State this; the
+  real-drone version supplies real telemetry through the same `CameraPose` contract.
+- **Footage ↔ pose alignment is a 1:1 index map, clamped at the ends** (`VideoFrameSource`). When
+  real footage lands it will need tuning (timestamps) so detections fall in sensible cells.
+- **The confidence gauge is a readable proxy, not the declaration logic.** `confidenceToDeclare`
+  normalizes the peak concentration to the locate floor and **snaps to 100 exactly when the brain
+  declares** `located` (the real, multi-factor persistence+mass trigger). The gauge can't disagree
+  with the brain, but it is a display heuristic, not the trigger itself.
+- **Voice is Milestone 2 (not built).** `recentCommands` is empty and the vendored `voice/`
+  telephony agent is untouched. Plan: TTS the `LocatedEvent` broadcast line into the dashboard
+  first; the full Deepgram/Twilio agent is strictly gated on everything else working.
