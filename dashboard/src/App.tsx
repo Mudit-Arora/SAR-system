@@ -10,6 +10,7 @@ import DetectionsList from './components/DetectionsList'
 import ProbabilityTrend from './components/ProbabilityTrend'
 import MapUpdateSummary from './components/MapUpdateSummary'
 import VoiceComms from './components/VoiceComms'
+import LiveTranscript from './components/LiveTranscript'
 import { mockState } from './data/mockState'
 
 export default function App() {
@@ -74,6 +75,9 @@ export default function App() {
             <MapUpdateSummary lastUpdate={mockState.telemetry.feedTime} />
             <VoiceComms commands={mockState.recentCommands} />
           </div>
+
+          {/* Live transcript from the deployed voice agent (real data) */}
+          <LiveTranscript />
         </main>
       </div>
 
