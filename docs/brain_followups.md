@@ -261,3 +261,25 @@ come from per-frame `MapState` (`PlannerFrame.map_state`). Result: the map looks
   scenario is real-terrain), so its tests skip without `data/terrain/`.
 - **Superseded for the map:** the colorized `terrain_render` `/terrain.png` and the client 6-blob
   `useHeatmap` (both left in place but unused by the map).
+
+### Voice — subject broadcast (Milestone 2, Phase 1; built, Deepgram-voiced)
+
+When the subject is located, the drone "speaks" to them. Built: `integration/broadcast.py` composes a
+situation-aware **template** message from the `LocatedEvent.terrain_context` (land cover → a warm
+spoken phrase), en + es. `integration/deepgram_tts.py` voices it with **Deepgram TTS (Aura)** — the
+sponsor tech. The server publishes `subjectBroadcast` in `/state` once located and serves the audio at
+`GET /broadcast.mp3?lang=en` (lazily synthesized + cached). The dashboard `VoiceComms` "To Subject"
+panel shows the message and **plays the Deepgram audio** on "Speak Message" (auto-best-effort on
+locate). Notes / honest scope:
+- **Deepgram primary, browser fallback:** non-key / unsupported-language / offline falls back to the
+  browser `speechSynthesis` so the panel never goes silent. `DEEPGRAM_API_KEY` lives in the gitignored
+  root `.env` (read by `deepgram_tts`); without it `/broadcast.mp3` 404s and the browser voice is used.
+- **Multilingual:** English is Deepgram-voiced; Spanish text is composed but voiced by the browser
+  (Aura is English-first — a Deepgram Spanish voice is a one-line `_LANG_VOICE` addition).
+- **Autoplay:** browsers may block audio until a user gesture; the "Speak Message" button is the
+  reliable trigger.
+- **Tests are hermetic:** they monkeypatch the key off / stub `synthesize` so `pytest` never makes a
+  live Deepgram call (a real key is present in `.env`).
+- **Operator telephony = Phase 2, GATED** (the vendored `voice/` Deepgram **Voice Agent**, local mic
+  demo via `dev_client.py`): swap `FUNCTIONS`/`SYSTEM_PROMPT` + a `sar_service` reading `/state` + a
+  `log_bridge.py` for the `LiveTranscript` WS on `:8765`. Its own plan when we start it.
