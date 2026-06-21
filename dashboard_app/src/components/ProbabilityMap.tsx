@@ -59,8 +59,11 @@ export default function ProbabilityMap({ state, live }: Props) {
         <div className="relative aspect-square h-full max-w-full">
           {/* The unified base image: terrain + posterior + sectors, rendered server-side per frame,
               keyed to state.frame. A square image in a square box -> no stretch. Two stacked
-              buffers crossfade frame-to-frame (see the double-buffer note above) so the animation
-              is smooth instead of a flashing slideshow. */}
+              buffers swap frame-to-frame (see the double-buffer note above). The swap is INSTANT
+              (no opacity transition): the incoming buffer is already fully decoded before we reveal
+              it, so flipping it on is gapless — and crucially avoids a crossfade, whose ~50/50
+              midpoint would let the dark panel show through (two half-opaque layers ≈ 75% opaque),
+              which reads as a soft flicker. Instant discrete frames look like the demo GIF. */}
           {([0, 1] as const).map((i) => (
             <img
               key={i}
@@ -69,7 +72,7 @@ export default function ProbabilityMap({ state, live }: Props) {
               draggable={false}
               decoding="async"
               onLoad={() => promoteIfReady(i)}
-              className="absolute inset-0 h-full w-full transition-opacity duration-150 ease-linear"
+              className="absolute inset-0 h-full w-full"
               style={{ opacity: front === i ? 1 : 0 }}
             />
           ))}
