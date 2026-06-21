@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Mic, Volume2, ChevronDown } from 'lucide-react'
+import { Mic, Volume2 } from 'lucide-react'
 import type { MapState, OperatorCommand } from '../types'
 import { API_BASE } from '../lib/api'
 
@@ -18,11 +18,10 @@ interface Props {
 
 export default function VoiceComms({ commands, broadcast }: Props) {
   const [tab, setTab] = useState<'operator' | 'subject'>('operator')
-  const [lang, setLang] = useState('en')
+  const [lang] = useState('en')
   // Remember which broadcast we've already auto-spoken (keyed by its timestamp), so it fires once.
   const autoSpokenRef = useRef<string | null>(null)
 
-  const langs = broadcast?.langs ?? ['en']
   const audioLangs = broadcast?.audioLangs ?? []
   const message = broadcast?.texts?.[lang] ?? broadcast?.texts?.en ?? DEFAULT_MESSAGE
 
@@ -58,10 +57,6 @@ export default function VoiceComms({ commands, broadcast }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [broadcast?.timestamp])
 
-  const cycleLang = () => {
-    const i = langs.indexOf(lang)
-    setLang(langs[(i + 1) % langs.length] ?? 'en')
-  }
   const isDeepgram = broadcast != null && audioLangs.includes(lang)
 
   return (
@@ -155,13 +150,6 @@ export default function VoiceComms({ commands, broadcast }: Props) {
               className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-accent-blue py-1.5 text-[12px] font-semibold text-white hover:bg-blue-500"
             >
               <Volume2 className="h-3.5 w-3.5" /> Speak Message
-            </button>
-            <button
-              onClick={cycleLang}
-              className="flex items-center gap-1 rounded-md bg-base-700/70 px-2.5 py-1.5 text-[12px] text-slate-200 hover:bg-base-600"
-              title="Switch language"
-            >
-              {LANG_INFO[lang]?.name ?? lang} <ChevronDown className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>

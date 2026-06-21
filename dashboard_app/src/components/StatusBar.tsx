@@ -8,7 +8,7 @@ export default function StatusBar() {
           <span className="text-slate-500">Data:</span> Simulated
         </span>
         <span className="hidden sm:inline">
-          <span className="text-slate-500">Region:</span> Pine Ridge, CA
+          <span className="text-slate-500">Region:</span> Mount Tamalpais State Park, CA
         </span>
         <span className="hidden sm:inline">
           <span className="text-slate-500">Weather:</span> 12°C, Clear

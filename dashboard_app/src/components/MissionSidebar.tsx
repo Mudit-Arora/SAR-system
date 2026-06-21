@@ -6,23 +6,19 @@ import {
   UserRound,
   Mountain,
 } from 'lucide-react'
-import type { MapLayer, MissionStats } from '../types'
+import type { MissionStats } from '../types'
 import { HEAT_GRADIENT_CSS } from '../lib/colors'
 
 interface Props {
   missionName: string
   startedAt: string
   stats: MissionStats
-  layers: MapLayer[]
-  onToggleLayer: (id: string) => void
 }
 
 export default function MissionSidebar({
   missionName,
   startedAt,
   stats,
-  layers,
-  onToggleLayer,
 }: Props) {
   const statRows = [
     { icon: Clock, label: 'Search Time', value: stats.searchTime, mono: true },
@@ -64,22 +60,6 @@ export default function MissionSidebar({
         ))}
       </div>
 
-      {/* Map layers */}
-      <div className="panel p-3">
-        <div className="panel-header">Map Layers</div>
-        <div className="mt-2 space-y-1">
-          {layers.map((l) => (
-            <label
-              key={l.id}
-              className="flex cursor-pointer items-center justify-between py-1 text-[13px] text-slate-300"
-            >
-              <span>{l.label}</span>
-              <Toggle on={l.enabled} onClick={() => onToggleLayer(l.id)} />
-            </label>
-          ))}
-        </div>
-      </div>
-
       {/* Probability legend */}
       <div className="panel p-3">
         <div className="panel-header">Probability</div>
@@ -93,22 +73,5 @@ export default function MissionSidebar({
         </div>
       </div>
     </aside>
-  )
-}
-
-function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`relative h-[18px] w-8 rounded-full transition ${
-        on ? 'bg-accent-cyan' : 'bg-base-600'
-      }`}
-    >
-      <span
-        className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-all ${
-          on ? 'left-[14px]' : 'left-0.5'
-        }`}
-      />
-    </button>
   )
 }

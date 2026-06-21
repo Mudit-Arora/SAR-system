@@ -3,8 +3,8 @@ import type { MapState } from '../types'
 // Mock read-model standing in for the Brain's serialized MapState.
 // Swap this for a live fetch (Redis read key / WebSocket) when wiring to the brain.
 export const mockState: MapState = {
-  missionName: 'Lost Hiker – Pine Ridge',
-  region: 'Pine Ridge, CA',
+  missionName: 'Lost Hiker – Mount Tamalpais',
+  region: 'Mount Tamalpais State Park, CA',
   startedAt: '09:31 AM, May 18, 2025',
   confidenceToDeclare: 92,
   declareThreshold: 85,
@@ -17,9 +17,9 @@ export const mockState: MapState = {
     { id: 6, label: 'Notify', status: 'next' },
   ],
   stats: {
-    searchTime: '02:14:32',
-    areaCoveredKm2: 2.38,
-    flightDistanceKm: 18.6,
+    searchTime: '01:47:12',
+    areaCoveredKm2: 3.6,
+    flightDistanceKm: 21.4,
     detections: 7,
     personsFound: 1,
   },

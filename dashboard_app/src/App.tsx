@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import TopBar from './components/TopBar'
 import StatusBar from './components/StatusBar'
 import MissionSidebar from './components/MissionSidebar'
@@ -9,21 +8,12 @@ import LiveVideoFeed from './components/LiveVideoFeed'
 import DetectionsList from './components/DetectionsList'
 import ProbabilityTrend from './components/ProbabilityTrend'
 import MapUpdateSummary from './components/MapUpdateSummary'
-import VoiceComms from './components/VoiceComms'
 import LiveTranscript from './components/LiveTranscript'
 import { useMapState } from './hooks/useMapState'
 
 export default function App() {
   // Live MapState from the brain's integration server (falls back to mockState when offline).
-  // `live` is false when the integration server is unreachable, so the map can flag demo data.
-  const { state, live } = useMapState()
-
-  // Local copy so layer toggles are interactive (dashboard reads state; toggles are view-only).
-  // Seeded once from the first state; the layer list is static, so polling never clobbers a toggle.
-  const [layers, setLayers] = useState(state.layers)
-
-  const toggleLayer = (id: string) =>
-    setLayers((ls) => ls.map((l) => (l.id === id ? { ...l, enabled: !l.enabled } : l)))
+  const { state } = useMapState()
 
   return (
     <div className="flex h-screen flex-col bg-base-950 text-slate-200">
@@ -34,8 +24,6 @@ export default function App() {
           missionName={state.missionName}
           startedAt={state.startedAt}
           stats={state.stats}
-          layers={layers}
-          onToggleLayer={toggleLayer}
         />
 
         {/* Main work area */}
@@ -55,8 +43,8 @@ export default function App() {
           <div className="flex min-h-[440px] flex-1 gap-3">
             <div className="flex min-w-0 flex-1 flex-col">
               {/* DEMO MODE: the map shows a pre-rendered 3-drone search + guide-home gif instead
-                  of the live server-rendered map; the sidebar layer toggles are cosmetic for it. */}
-              <ProbabilityMap live={live} />
+                  of the live server-rendered map. */}
+              <ProbabilityMap />
             </div>
 
             {/* Right rail widened (the map is a centered square now, so it freed up horizontal
@@ -71,11 +59,9 @@ export default function App() {
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
             <ProbabilityTrend data={state.trend} now={state.confidenceToDeclare} />
             <MapUpdateSummary stats={state.stats} trend={state.trend} lastUpdate={state.telemetry.feedTime} />
-            <VoiceComms commands={state.recentCommands} broadcast={state.subjectBroadcast} />
+            {/* Live transcript from the deployed voice agent (real data) */}
+            <LiveTranscript />
           </div>
-
-          {/* Live transcript from the deployed voice agent (real data) */}
-          <LiveTranscript />
         </main>
       </div>
 
